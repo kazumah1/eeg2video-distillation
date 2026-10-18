@@ -1,0 +1,6 @@
+data/
+runs/
+external/
+results/*.csv
+__pycache__/
+*.pyc

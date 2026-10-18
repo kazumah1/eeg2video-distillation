@@ -1,0 +1,6 @@
+# Colab already has torch, numpy, pandas. These cover our code + NeuroBridge's train.py.
+huggingface_hub
+einops
+reformer-pytorch
+open_clip_torch
+mne
