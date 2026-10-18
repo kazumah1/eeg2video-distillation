@@ -7,6 +7,8 @@
 # Example:
 #   bash scripts/train_teacher_neurobridge.sh nb_s08_post17 8 posterior17
 #   bash scripts/train_teacher_neurobridge.sh nb_s08_all 8 all
+# Env: EPOCHS (default 50); PUBLISHED=0 drops the eeg-smoothing / frozen-prior /
+# test-image-aug flags of the published intra-subject script (faster load, lower accuracy).
 set -euo pipefail
 NAME=$1; SUB=$2; CHANS=$3; shift 3
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -14,6 +16,7 @@ NB=$ROOT/external/NeuroBridge
 NB_COMMIT=4f59fbb9597dbc1a0a9276a984f4f4c8b43ae7d6
 DATA=${DATA:-$ROOT/data/things_eeg}
 EPOCHS=${EPOCHS:-50}
+PUBLISHED=${PUBLISHED:-1}
 
 if [ ! -d "$NB/.git" ]; then
   git clone -q https://github.com/feroooooo/NeuroBridge.git "$NB"
@@ -33,15 +36,23 @@ AUG_DIR=$DATA/image_feature/RN50/GaussianBlur-GaussianNoise-LowResolution-Mosaic
 AUG_FLAGS=()
 if [ -d "$AUG_DIR" ]; then
   AUG_FLAGS=(--image_aug --aug_image_feature_dirs "$AUG_DIR")
+  if [ "$PUBLISHED" = "1" ]; then AUG_FLAGS+=(--image_test_aug); fi
 else
   echo "note: $AUG_DIR not found; training without image augmentation (lower than published)"
+fi
+
+EEG_FLAGS=()
+if [ "$PUBLISHED" = "1" ]; then
+  # One-time random temporal smoothing of the train EEG at load (pure-Python loop: a few
+  # minutes for 17 channels, longer for 63). Test EEG is not smoothed.
+  EEG_FLAGS=(--eeg_aug --eeg_aug_type smooth --frozen_eeg_prior)
 fi
 
 OUT=$ROOT/runs/_neurobridge
 mkdir -p "$OUT"
 cd "$NB"
-# Mirrors scripts/things_eeg/intra-subjects.sh except: --eeg_aug/--frozen_eeg_prior are
-# opt-in via extra flags (they are slow), and --text_feature_dir is empty.
+# Mirrors scripts/things_eeg/intra-subjects.sh (PUBLISHED=1). ${a[@]+"${a[@]}"} keeps
+# empty arrays safe under set -u on macOS bash 3.2.
 python train.py \
   --batch_size 1024 --learning_rate 1e-4 --num_epochs "$EPOCHS" \
   --output_dir "$OUT" --output_name "$NAME" \
@@ -50,9 +61,9 @@ python train.py \
   --softplus --img_l2norm --projector linear --feature_dim 512 \
   --image_feature_dir "$DATA/image_feature/RN50" --text_feature_dir "" \
   --eeg_data_dir "$DATA/preprocessed_eeg" \
-  --selected_channels "${SEL[@]}" \
+  --selected_channels ${SEL[@]+"${SEL[@]}"} \
   --data_average --save_weights --seed 2025 --device cuda:0 \
-  "${AUG_FLAGS[@]}" "$@"
+  ${AUG_FLAGS[@]+"${AUG_FLAGS[@]}"} ${EEG_FLAGS[@]+"${EEG_FLAGS[@]}"} "$@"
 
 RUN_DIR=$(cat "$OUT/last_run.txt")
 mkdir -p "$ROOT/runs"
