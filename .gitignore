@@ -4,3 +4,4 @@ external/
 results/*.csv
 __pycache__/
 *.pyc
+.venv/
