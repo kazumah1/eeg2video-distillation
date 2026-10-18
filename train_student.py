@@ -69,7 +69,10 @@ def parse():
     p.add_argument("--save_as", default=None, help="save the student as runs/<name> (reusable as a teacher)")
     p.add_argument("--results_csv", default="results/results.csv")
     p.add_argument("--tag", default="")
-    p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    default_dev = ("cuda" if torch.cuda.is_available()
+                   else "mps" if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available()
+                   else "cpu")
+    p.add_argument("--device", default=default_dev, help="cuda, mps (Apple GPU) or cpu")
     return p.parse_args()
 
 
