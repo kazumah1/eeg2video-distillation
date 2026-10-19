@@ -45,7 +45,18 @@ def main():
     save_run(teacher, tdir, {"eeg_encoder_type": "EEGProject", "selected_channels": [],
                              "projector": "linear", "feature_dim": 32, "time_window": [0, 250],
                              "init_temperature": 0.07, "softplus": True})
-    common = ["--eeg_dir", eeg_dir, "--feat_dir", feat_dir, "--subject", "1", "--teacher", tdir,
+    tdir17 = os.path.join(tmp, "runs", "fake_teacher17")
+    from eegdistill.montages import POSTERIOR_17, resolve
+    _, idx17 = resolve("posterior17", ch)
+    save_run(EEGImageModel(idx17, 250, ds.feat_dim, "linear", 32), tdir17,
+             {"eeg_encoder_type": "EEGProject", "selected_channels": POSTERIOR_17, "projector": "linear",
+              "feature_dim": 32, "time_window": [0, 250], "init_temperature": 0.07, "softplus": True})
+    aug_dir = os.path.join(feat_dir, "aug")
+    ds_aug = ThingsEEG(eeg_dir, feat_dir, [1], "train", average=True, aug_dir=aug_dir)
+    assert ds_aug.aug_features.shape == (3, 400, ds.feat_dim), ds_aug.aug_features.shape
+    f1 = ds_aug.train_image_features(torch.arange(5))
+    assert f1.shape == (5, ds.feat_dim)
+    common = ["--eeg_dir", eeg_dir, "--feat_dir", feat_dir, "--aug_dir", aug_dir, "--subject", "1", "--teacher", tdir,
               "--epochs", "2", "--batch_size", "64", "--eval_every", "1", "--device", "cpu",
               "--runs_dir", os.path.join(tmp, "runs"), "--results_csv", os.path.join(tmp, "res.csv")]
     for cond in ["none", "response", "feature", "relational", "all"]:
@@ -61,6 +72,29 @@ def main():
     rows = list(csv.DictReader(open(os.path.join(tmp, "res.csv"))))
     assert len(rows) == 8, len(rows)
     assert rows[-2]["teacher"] == "ba" and rows[-2]["teacher_channels"] == "8"
+    run(common + ["--montage", "crown8", "--condition", "kl", "--init_from_teacher", "1", "--tag", "init"])
+    print("ok init_from_teacher")
+
+    # Full sweep, every group, 2 seeds, 2 epochs, then the summary.
+    sweep_csv = os.path.join(tmp, "sweep.csv")
+    sw = [sys.executable, os.path.join(ROOT, "scripts", "sweep.py")]
+    extra = ["--extra", "--eeg_dir", eeg_dir, "--feat_dir", feat_dir, "--aug_dir", aug_dir, "--subject", "1",
+             "--batch_size", "64", "--eval_every", "1", "--device", "cpu"]
+    for _ in range(2):  # second pass must find everything done
+        out = subprocess.run(sw + ["run", "--groups", "all", "--seeds", "0", "1", "--epochs", "2",
+                                   "--teacher_all", tdir, "--teacher_post17", tdir17,
+                                   "--runs_dir", os.path.join(tmp, "runs"), "--results_csv", sweep_csv] + extra,
+                             capture_output=True, text=True)
+        if out.returncode != 0:
+            print(out.stdout[-3000:], out.stderr[-3000:])
+            raise SystemExit("FAILED: sweep")
+        print(out.stdout.splitlines()[0])
+    summ = subprocess.run(sw + ["summary", "--results_csv", sweep_csv], capture_output=True, text=True)
+    if summ.returncode != 0:
+        print(summ.stdout, summ.stderr)
+        raise SystemExit("FAILED: summary")
+    print(summ.stdout)
+    assert len(list(csv.DictReader(open(sweep_csv)))) == 58
     print(f"PASS: {len(rows)} runs logged; example row: top1={rows[0]['top1']} "
           f"teacher_top1={rows[0]['teacher_top1']} fid_cos={rows[0]['fid_cos']}")
 

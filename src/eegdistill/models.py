@@ -83,3 +83,28 @@ class EEGImageModel(nn.Module):
 
     def encode_img(self, img_feat):
         return self.img_projector(img_feat)
+
+
+@torch.no_grad()
+def init_from_teacher(student, teacher, student_chans, teacher_chans):
+    """Weight inheritance: copy everything the student can reuse from the teacher.
+
+    EEGProject flattens (C, T) row-major, so channel c owns input columns
+    [c*T, (c+1)*T) of the first Linear. Columns of student channels the teacher
+    also has are copied; the rest keep their random init. All later layers and
+    both projectors are copied whole. Returns the number of channels inherited.
+    """
+    T = student.encoder.input_dim // len(student_chans)
+    w_s, w_t = student.encoder.model[0].weight, teacher.encoder.model[0].weight
+    shared = 0
+    for i, c in enumerate(student_chans):
+        if c in teacher_chans:
+            j = teacher_chans.index(c)
+            w_s[:, i * T:(i + 1) * T] = w_t[:, j * T:(j + 1) * T]
+            shared += 1
+    student.encoder.model[0].bias.copy_(teacher.encoder.model[0].bias)
+    student.encoder.model[1].load_state_dict(teacher.encoder.model[1].state_dict())
+    student.encoder.model[2].load_state_dict(teacher.encoder.model[2].state_dict())
+    student.eeg_projector.load_state_dict(teacher.eeg_projector.state_dict())
+    student.img_projector.load_state_dict(teacher.img_projector.state_dict())
+    return shared

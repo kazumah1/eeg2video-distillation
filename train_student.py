@@ -30,12 +30,14 @@ from eegdistill import losses  # noqa: E402
 from eegdistill.checkpoints import load_run, save_run  # noqa: E402
 from eegdistill.data import ThingsEEG, random_smooth  # noqa: E402
 from eegdistill.evaluate import evaluate  # noqa: E402
-from eegdistill.models import EEGImageModel  # noqa: E402
+from eegdistill.models import EEGImageModel, init_from_teacher  # noqa: E402
 from eegdistill.montages import resolve  # noqa: E402
 
 PRESETS = {  # weights on each distillation term
     "none":       dict(w_emb=0.0, w_kl=0.0, w_feat=0.0, w_rel=0.0),
     "response":   dict(w_emb=1.0, w_kl=1.0, w_feat=0.0, w_rel=0.0),
+    "emb":        dict(w_emb=1.0, w_kl=0.0, w_feat=0.0, w_rel=0.0),
+    "kl":         dict(w_emb=0.0, w_kl=1.0, w_feat=0.0, w_rel=0.0),
     "feature":    dict(w_emb=0.0, w_kl=0.0, w_feat=1.0, w_rel=0.0),
     "relational": dict(w_emb=0.0, w_kl=0.0, w_feat=0.0, w_rel=1.0),
     "all":        dict(w_emb=1.0, w_kl=1.0, w_feat=1.0, w_rel=1.0),
@@ -46,6 +48,10 @@ def parse():
     p = argparse.ArgumentParser()
     p.add_argument("--eeg_dir", default="data/things_eeg/preprocessed_eeg")
     p.add_argument("--feat_dir", default="data/things_eeg/image_feature/RN50")
+    p.add_argument("--aug_dir", default="data/things_eeg/image_feature/RN50/GaussianBlur-GaussianNoise-LowResolution-Mosaic",
+                   help="augmented image features (what NeuroBridge teachers train on); '' = clean only")
+    p.add_argument("--eval_img", default="augmean", choices=["augmean", "augrand", "clean"],
+                   help="test image features: mean over augmented copies (default), one fixed random copy, or clean")
     p.add_argument("--subject", type=int, default=8)
     p.add_argument("--teacher", required=True, help="run dir with train_config.json + checkpoint")
     p.add_argument("--teacher_ckpt", default="checkpoint_last.pth")
@@ -54,6 +60,9 @@ def parse():
     for w in ["w_emb", "w_kl", "w_feat", "w_rel"]:
         p.add_argument(f"--{w}", type=float, default=None, help="override the preset weight")
     p.add_argument("--kd_tau", type=float, default=4.0)
+    p.add_argument("--init_from_teacher", type=int, default=0,
+                   help="1 = start the student from the teacher's weights (shared channels' input "
+                        "columns, all later layers, both projectors)")
     p.add_argument("--img_proj", default="teacher", choices=["teacher", "own"],
                    help="teacher: copy and freeze the teacher's image projector (same embedding "
                         "space in every condition); own: train a fresh one")
@@ -97,8 +106,14 @@ def main():
     t0 = time.time()
 
     print(f">>> loading subject {a.subject} (train_average={a.train_average}, test_average={a.test_average})")
-    train = ThingsEEG(a.eeg_dir, a.feat_dir, [a.subject], "train", average=bool(a.train_average))
-    test = ThingsEEG(a.eeg_dir, a.feat_dir, [a.subject], "test", average=bool(a.test_average))
+    aug_dir = a.aug_dir if a.aug_dir and os.path.isdir(a.aug_dir) else None
+    if a.aug_dir and not aug_dir:
+        print(f"WARNING: {a.aug_dir} not found; using clean image features (mismatched with an image-aug teacher)")
+    train = ThingsEEG(a.eeg_dir, a.feat_dir, [a.subject], "train", average=bool(a.train_average), aug_dir=aug_dir)
+    test = ThingsEEG(a.eeg_dir, a.feat_dir, [a.subject], "test", average=bool(a.test_average),
+                     aug_dir=aug_dir, eval_img=a.eval_img)
+    if aug_dir:
+        print(f"    image features: {train.aug_features.shape[0]} augmented copies per train image; eval={a.eval_img}")
     if a.eeg_smooth:
         train.eeg = random_smooth(train.eeg, seed=a.seed)
     print(f"    train {tuple(train.eeg.shape)}  test {tuple(test.eeg.shape)}  feat_dim {train.feat_dim}")
@@ -113,6 +128,9 @@ def main():
     projector = tcfg.get("projector", "direct")
     proj_dim = tcfg.get("feature_dim", 512)
     student = EEGImageModel(s_idx, train.n_samples, train.feat_dim, projector, proj_dim).to(dev)
+    if a.init_from_teacher:
+        shared = init_from_teacher(student, teacher, s_chans, t_chans)
+        print(f"    init from teacher: {shared}/{len(s_chans)} student channels inherited")
     if a.img_proj == "teacher":
         student.img_projector.load_state_dict(teacher.img_projector.state_dict())
         for p_ in student.img_projector.parameters():
@@ -134,7 +152,7 @@ def main():
         for i in range(0, n - a.batch_size + 1, a.batch_size):  # drop_last
             idx = perm[i:i + a.batch_size]
             x = train.eeg[idx].to(dev, non_blocking=True)
-            f_img = train.image_features[train.img_idx[idx]].to(dev, non_blocking=True)
+            f_img = train.train_image_features(idx).to(dev, non_blocking=True)
             z_s, h_s = student.encode_eeg(x, return_hidden=True)
             z_img = student.encode_img(f_img)
             loss_task = task(z_s, z_img)
@@ -173,7 +191,8 @@ def main():
         "subject": a.subject, "montage": a.montage, "n_channels": len(s_chans),
         "teacher": os.path.basename(os.path.normpath(a.teacher)), "teacher_channels": len(t_chans),
         "condition": a.condition, **w, "kd_tau": a.kd_tau, "img_proj": a.img_proj,
-        "train_average": a.train_average, "eeg_smooth": a.eeg_smooth, "test_average": a.test_average,
+        "train_average": a.train_average, "eeg_smooth": a.eeg_smooth,
+        "init_from_teacher": a.init_from_teacher, "img_feats": a.eval_img if aug_dir else "clean", "test_average": a.test_average,
         "epochs": a.epochs, "seed": a.seed, **{k: round(v, 4) if isinstance(v, float) else v for k, v in res.items()},
         "minutes": round((time.time() - t0) / 60, 1),
     }

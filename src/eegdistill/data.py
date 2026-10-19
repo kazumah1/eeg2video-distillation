@@ -7,6 +7,12 @@ Expected layout (what NeuroBridge's preprocess_eeg.py / its Hugging Face copy pr
     <eeg_dir>/sub-08/test.npy           (200 objects, 1 image, 80 reps, 63 ch, 250 samples)
     <feat_dir>/image_train.npy          (1654, 10, D)
     <feat_dir>/image_test.npy           (200, 1, D)
+    <aug_dir>/train.npy, test.npy       (R, obj, img, D) features of R augmented copies of
+                                        each image (NeuroBridge --image_aug); optional
+
+With --image_aug NeuroBridge trains (and, with --image_test_aug, tests) ONLY on the
+augmented features, so a NeuroBridge teacher's image projector has never seen the
+clean ones. Students that reuse that projector must use the augmented features too.
 
 The dataset always returns ALL channels. Teacher and student pick their own
 channel subsets inside the training loop, so both see exactly the same trial.
@@ -33,13 +39,31 @@ class ThingsEEG(Dataset):
     """
 
     def __init__(self, eeg_dir, feat_dir, subjects, split="train", average=True,
-                 time_window=(0, 250), dtype=np.float32):
+                 time_window=(0, 250), dtype=np.float32, aug_dir=None, eval_img="augmean"):
         assert split in ("train", "test")
+        assert eval_img in ("augmean", "augrand", "clean")
         self.ch_names = load_ch_names(eeg_dir)
         feats = np.load(os.path.join(feat_dir, f"image_{split}.npy")).astype(np.float32)
         n_obj, n_img, feat_dim = feats.shape
         self.feat_dim = feat_dim
-        self.image_features = torch.from_numpy(feats.reshape(n_obj * n_img, feat_dim))
+        self.clean_features = torch.from_numpy(feats.reshape(n_obj * n_img, feat_dim))
+        self.aug_features = None  # (R, N, D)
+        if aug_dir:
+            aug = np.load(os.path.join(aug_dir, f"{split}.npy"))
+            if aug.ndim == 3:
+                aug = aug[None]
+            assert aug.shape[1:] == feats.shape, f"aug features {aug.shape} vs clean {feats.shape}"
+            self.aug_features = torch.from_numpy(
+                np.asarray(aug, dtype=np.float32).reshape(aug.shape[0], n_obj * n_img, feat_dim))
+        # Fixed per-image features used for evaluation (deterministic unless augrand).
+        if self.aug_features is None or eval_img == "clean":
+            self.image_features = self.clean_features
+        elif eval_img == "augmean":
+            self.image_features = self.aug_features.mean(0)
+        else:
+            g = torch.Generator().manual_seed(0)
+            r = torch.randint(self.aug_features.shape[0], (n_obj * n_img,), generator=g)
+            self.image_features = self.aug_features[r, torch.arange(n_obj * n_img)]
 
         eeg_parts, img_idx_parts, subj_parts = [], [], []
         for s in subjects:
@@ -67,6 +91,15 @@ class ThingsEEG(Dataset):
     def __len__(self):
         return len(self.img_idx)
 
+    def train_image_features(self, idx, generator=None):
+        """Image features for training trials `idx`: one random augmented copy per trial
+        (as NeuroBridge does), or the clean features if no augmentation is loaded."""
+        j = self.img_idx[idx]
+        if self.aug_features is None:
+            return self.clean_features[j]
+        r = torch.randint(self.aug_features.shape[0], (len(j),), generator=generator)
+        return self.aug_features[r, j]
+
     def __getitem__(self, i):
         j = self.img_idx[i]
         return self.eeg[i], self.image_features[j], j
@@ -90,6 +123,10 @@ def make_synthetic(root, n_obj_train=40, n_obj_test=10, feat_dim=64, n_ch=63, n_
         x = sig + rng.normal(scale=2.0, size=(n_obj, n_img, n_rep, n_ch, n_t)).astype(np.float32)
         np.save(os.path.join(eeg_dir, "sub-01", f"{split}.npy"), x.astype(np.float32))
         np.save(os.path.join(feat_dir, f"image_{split}.npy"), f_)
+        aug_dir = os.path.join(feat_dir, "aug")
+        os.makedirs(aug_dir, exist_ok=True)
+        aug = f_[None] + rng.normal(scale=0.3, size=(3,) + f_.shape).astype(np.float32)
+        np.save(os.path.join(aug_dir, f"{split}.npy"), aug.astype(np.float32))
     return eeg_dir, feat_dir
 
 

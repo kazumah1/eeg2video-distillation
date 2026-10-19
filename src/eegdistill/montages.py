@@ -25,12 +25,18 @@ NESTED_32 = NESTED_16 + [
     "CP1", "CP2", "CPz", "C1", "C2", "FCz", "F3", "F4",
 ]  # no Fz: THINGS-EEG's 63-channel set omits it (likely the reference)
 
+# Reference only (not a Crown montage): the best-case 8 sites for visual decoding.
+# Crown8 vs occipital8 at equal channel count separates "fewer channels" from
+# "the Crown's channels are in the wrong place for vision".
+OCCIPITAL_8 = ["O1", "Oz", "O2", "PO7", "PO3", "POz", "PO4", "PO8"]
+
 MONTAGES = {
     "all": None,  # every channel in info.json, in file order
     "posterior17": POSTERIOR_17,
     "nested32": NESTED_32,
     "nested16": NESTED_16,
     "crown8": CROWN_8,
+    "occipital8": OCCIPITAL_8,
 }
 
 

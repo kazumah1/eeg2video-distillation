@@ -15,7 +15,8 @@ of the teacher's zero-shot image retrieval the student keeps, with and without d
 | `src/eegdistill/montages.py` | Channel sets: `all`, `posterior17`, `nested32`, `nested16`, `crown8` (nested) |
 | `src/eegdistill/losses.py` | Contrastive task loss; response (embedding cosine + KL on retrieval scores), feature, relational distillation |
 | `src/eegdistill/evaluate.py` | 200-way retrieval, chance-normalized top-1, % of teacher retained, student-teacher fidelity |
-| `tests/smoke_test.py` | CPU end-to-end test on synthetic data |
+| `scripts/sweep.py` | Experiment grid (channels, losses, teachers, progressive, single_trial); resumable; `summary` prints mean ± std over seeds and paired gain vs the no-KD baseline |
+| `tests/smoke_test.py` | CPU end-to-end test on synthetic data, including the full sweep |
 
 ## Conditions (`--condition`)
 
@@ -25,11 +26,22 @@ of the teacher's zero-shot image retrieval the student keeps, with and without d
 | `response` | + (1 - cos) to the teacher's EEG embedding + KL to the teacher's softened retrieval scores (tau = `--kd_tau`) |
 | `feature` | + (1 - cos) between first-layer hidden features (after spatial mixing) |
 | `relational` | + MSE between trial-by-trial similarity matrices |
+| `emb` / `kl` | Each half of `response` alone |
 | `all` | All of the above |
+
+Other options: `--init_from_teacher 1` (weight inheritance: the student starts from the teacher's
+weights for its shared channels, all later layers and both projectors), `--train_average 0
+--test_average 0` (single trials), montage `occipital8` (reference: best 8 sites for vision).
 
 Born-again control: save an 8-channel `none` student with `--save_as`, then pass it as `--teacher`.
 
 Design choices to know:
+- NeuroBridge with `--image_aug` trains only on features of augmented images (and tests on them
+  with `--image_test_aug`); its image projector never sees clean features. Students therefore
+  train on a random augmented copy per trial and are evaluated on the mean of the augmented
+  copies (`--eval_img augmean`). Using clean features with a NeuroBridge teacher's projector
+  roughly halves the teacher's own top-1 (63% -> 34.5% on subject 8).
+- Train EEG gets NeuroBridge's one-time random smoothing (`--eeg_smooth 1`), as the teacher did.
 - Teacher and student see the same trial; each selects its own channels from the full 63.
 - `--img_proj teacher` (default) copies and freezes the teacher's image projector in every
   condition, so all students share one embedding space and differ only in the distillation term.
