@@ -35,6 +35,7 @@ from eegdistill.montages import resolve  # noqa: E402
 
 PRESETS = {  # weights on each distillation term
     "none":       dict(w_emb=0.0, w_kl=0.0, w_feat=0.0, w_rel=0.0),
+    "imitate":    dict(w_emb=1.0, w_kl=0.0, w_feat=0.0, w_rel=0.0, w_task=0.0),  # pure imitation, no task loss
     "response":   dict(w_emb=1.0, w_kl=1.0, w_feat=0.0, w_rel=0.0),
     "emb":        dict(w_emb=1.0, w_kl=0.0, w_feat=0.0, w_rel=0.0),
     "kl":         dict(w_emb=0.0, w_kl=1.0, w_feat=0.0, w_rel=0.0),
@@ -57,7 +58,7 @@ def parse():
     p.add_argument("--teacher_ckpt", default="checkpoint_last.pth")
     p.add_argument("--montage", default="crown8", help="montage name in montages.py")
     p.add_argument("--condition", default="none", choices=sorted(PRESETS))
-    for w in ["w_emb", "w_kl", "w_feat", "w_rel"]:
+    for w in ["w_emb", "w_kl", "w_feat", "w_rel", "w_task"]:
         p.add_argument(f"--{w}", type=float, default=None, help="override the preset weight")
     p.add_argument("--kd_tau", type=float, default=4.0)
     p.add_argument("--init_from_teacher", type=int, default=0,
@@ -98,7 +99,7 @@ def seed_all(seed):
 def main():
     a = parse()
     seed_all(a.seed)
-    w = dict(PRESETS[a.condition])
+    w = dict(w_task=1.0, **PRESETS[a.condition]) if "w_task" not in PRESETS[a.condition] else dict(PRESETS[a.condition])
     for k in w:
         if getattr(a, k) is not None:
             w[k] = getattr(a, k)
@@ -141,7 +142,7 @@ def main():
     params = [p_ for p_ in student.parameters() if p_.requires_grad]
     opt = torch.optim.AdamW(params, lr=a.lr, betas=(0.9, 0.999), weight_decay=a.weight_decay)
 
-    needs_teacher = any(v > 0 for v in w.values())
+    needs_teacher = any(v > 0 for k, v in w.items() if k != "w_task")
     n = len(train)
     curve = []
     for epoch in range(1, a.epochs + 1):
@@ -156,7 +157,7 @@ def main():
             z_s, h_s = student.encode_eeg(x, return_hidden=True)
             z_img = student.encode_img(f_img)
             loss_task = task(z_s, z_img)
-            loss = loss_task
+            loss = w["w_task"] * loss_task
             parts = {"task": loss_task.item()}
             if needs_teacher:
                 with torch.no_grad():
@@ -199,8 +200,12 @@ def main():
     print(json.dumps(row, indent=1))
     os.makedirs(os.path.dirname(a.results_csv) or ".", exist_ok=True)
     new = not os.path.exists(a.results_csv)
+    fields = list(row)
+    if not new:  # append under the existing header; columns it lacks are dropped
+        with open(a.results_csv) as f:
+            fields = next(csv.reader(f))
     with open(a.results_csv, "a", newline="") as f:
-        wr = csv.DictWriter(f, fieldnames=list(row))
+        wr = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
         if new:
             wr.writeheader()
         wr.writerow(row)

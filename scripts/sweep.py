@@ -29,7 +29,7 @@ import sys
 from collections import defaultdict
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-GROUPS = ["channels", "losses", "teachers", "progressive", "single_trial"]
+GROUPS = ["channels", "losses", "teachers", "progressive", "single_trial", "agnostic"]
 METRICS = ["top1", "top5", "pct_teacher_retained", "fid_cos", "teacher_top1"]
 
 
@@ -42,10 +42,10 @@ def plan(a):
     T_ALL, T_P17 = a.teacher_all, a.teacher_post17
     runs, seen = [], set()
 
-    def add(config, seed, args, save_as=None, base=None):
+    def add(config, seed, args, save_as=None, base=None, script="train_student.py"):
         if (config, seed) not in seen:
             seen.add((config, seed))
-            runs.append((config, seed, args, save_as, base))
+            runs.append((config, seed, args, save_as, base, script))
 
     def crown_base(seed):
         add("channels/crown8-none", seed, ["--teacher", T_ALL, "--montage", "crown8", "--condition", "none"],
@@ -66,7 +66,7 @@ def plan(a):
                 add(f"channels/{m}-none", seed, ["--teacher", T_ALL, "--montage", m, "--condition", "none"])
         if "losses" in groups:
             base = crown_base(seed)
-            for c in ["emb", "kl", "response", "feature", "relational", "all"]:
+            for c in ["emb", "kl", "response", "feature", "relational", "all", "imitate"]:
                 cfg = "channels/crown8-response" if c == "response" else f"losses/crown8-{c}"
                 add(cfg, seed, ["--teacher", T_ALL, "--montage", "crown8", "--condition", c], base=base)
             # relational loss is ~0.1 vs ~1 (emb) and ~5 (kl) at weight 1, so also test it scaled up
@@ -103,6 +103,14 @@ def plan(a):
             add("single_trial/crown8-response", seed,
                 ["--teacher", T_ALL, "--montage", "crown8", "--condition", "response"] + st,
                 base="single_trial/crown8-none")
+        if "agnostic" in groups:
+            # one model for every montage; train_agnostic.py writes a row per montage and the
+            # crown8 row is the done-marker. Baselines are the dedicated per-montage students.
+            for c, init in [("none", 0), ("response", 0), ("response", 1)]:
+                sfx = f"{c}{'-init' if init else ''}"
+                add(f"agnostic/crown8-{sfx}", seed,
+                    ["--teacher", T_ALL, "--condition", c, "--init_from_teacher", str(init)],
+                    script="train_agnostic.py")
     return runs
 
 
@@ -119,9 +127,9 @@ def cmd_run(a):
     todo = [r for r in runs if f"{r[0]}|seed{r[1]}" not in done
             or (r[3] and not os.path.exists(os.path.join(a.runs_dir, r[3], "checkpoint_last.pth")))]
     print(f"{len(runs)} runs planned, {len(runs) - len(todo)} already done, {len(todo)} to run")
-    for i, (config, seed, args, save_as, _) in enumerate(todo, 1):
+    for i, (config, seed, args, save_as, _, script) in enumerate(todo, 1):
         tag = f"{config}|seed{seed}"
-        cmd = [sys.executable, os.path.join(ROOT, "train_student.py"), *args, "--seed", str(seed),
+        cmd = [sys.executable, os.path.join(ROOT, script), *args, "--seed", str(seed),
                "--tag", tag, "--results_csv", a.results_csv, "--runs_dir", a.runs_dir,
                "--epochs", str(a.epochs), *a.extra]
         if save_as:
@@ -151,7 +159,7 @@ def cmd_summary(a):
     if not rows:
         raise SystemExit(f"no sweep rows in {a.results_csv}")
     a.groups, a.seeds = ["all"], sorted({int(r["seed"]) for r in rows})
-    base_of = {cfg: base for cfg, _, _, _, base in plan(a)}
+    base_of = {cfg: base for cfg, _, _, _, base, _ in plan(a)}
     by = defaultdict(dict)  # config -> seed -> row
     for r in rows:
         cfg = r["tag"].split("|seed")[0]
@@ -164,6 +172,8 @@ def cmd_summary(a):
             mu, sd = mean_std([float(r[m]) for r in seeds.values() if r.get(m) not in (None, "", "nan")])
             line[m] = f"{mu:.1f} ± {sd:.1f}" if not math.isnan(sd) else f"{mu:.1f}"
         base = base_of.get(cfg)
+        if cfg.startswith("agnostic/"):  # vs the dedicated no-KD student on the same montage
+            base = f"channels/{cfg.split('/')[1].rsplit('-', 2 if cfg.endswith('-init') else 1)[0]}-none"
         if base and base in by:
             d = [float(seeds[s]["top1"]) - float(by[base][s]["top1"]) for s in seeds if s in by[base]]
             mu, sd = mean_std(d)

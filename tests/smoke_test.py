@@ -94,7 +94,8 @@ def main():
         print(summ.stdout, summ.stderr)
         raise SystemExit("FAILED: summary")
     print(summ.stdout)
-    assert len(list(csv.DictReader(open(sweep_csv)))) == 64
+    n_rows = len(list(csv.DictReader(open(sweep_csv))))
+    assert n_rows == 2 * (33 + 3 * 8), n_rows  # 33 single-row runs + 3 agnostic runs x 8 montages, per seed
     print(f"PASS: {len(rows)} runs logged; example row: top1={rows[0]['top1']} "
           f"teacher_top1={rows[0]['teacher_top1']} fid_cos={rows[0]['fid_cos']}")
 
