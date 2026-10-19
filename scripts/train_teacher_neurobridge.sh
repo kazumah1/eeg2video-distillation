@@ -50,12 +50,16 @@ fi
 
 OUT=$ROOT/runs/_neurobridge
 mkdir -p "$OUT"
+# NeuroBridge exits (status 0) if a run with the same name exists, so make every run name
+# unique; runs/<NAME> is repointed to the newest run. Old runs stay in runs/_neurobridge.
+RUN_NAME="$NAME-v$(date +%s)"
+rm -f "$OUT/last_run.txt"
 cd "$NB"
 # Mirrors scripts/things_eeg/intra-subjects.sh (PUBLISHED=1). ${a[@]+"${a[@]}"} keeps
 # empty arrays safe under set -u on macOS bash 3.2.
 python train.py \
   --batch_size 1024 --learning_rate 1e-4 --num_epochs "$EPOCHS" \
-  --output_dir "$OUT" --output_name "$NAME" \
+  --output_dir "$OUT" --output_name "$RUN_NAME" \
   --eeg_encoder_type EEGProject \
   --train_subject_ids "$SUB" --test_subject_ids "$SUB" \
   --softplus --img_l2norm --projector linear --feature_dim 512 \
@@ -65,7 +69,11 @@ python train.py \
   --data_average --save_weights --seed 2025 --device cuda:0 \
   ${AUG_FLAGS[@]+"${AUG_FLAGS[@]}"} ${EEG_FLAGS[@]+"${EEG_FLAGS[@]}"} "$@"
 
-RUN_DIR=$(cat "$OUT/last_run.txt")
+RUN_DIR=$(cat "$OUT/last_run.txt" 2>/dev/null || true)
+case "$RUN_DIR" in
+  *"-$RUN_NAME") ;;
+  *) echo "ERROR: training did not produce run $RUN_NAME (last_run.txt: '$RUN_DIR')"; exit 1 ;;
+esac
 mkdir -p "$ROOT/runs"
 ln -sfn "$RUN_DIR" "$ROOT/runs/$NAME"
 echo "teacher ready: runs/$NAME -> $RUN_DIR"
