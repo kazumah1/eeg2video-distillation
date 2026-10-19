@@ -51,7 +51,8 @@ fi
 OUT=$ROOT/runs/_neurobridge
 mkdir -p "$OUT"
 # NeuroBridge exits (status 0) if a run with the same name exists, so make every run name
-# unique; runs/<NAME> is repointed to the newest run. Old runs stay in runs/_neurobridge.
+# unique; runs/<NAME> is repointed to the newest run. After a successful run, older runs of
+# the same NAME in runs/_neurobridge are deleted (KEEP_OLD=1 keeps them).
 RUN_NAME="$NAME-v$(date +%s)"
 rm -f "$OUT/last_run.txt"
 cd "$NB"
@@ -76,5 +77,9 @@ case "$RUN_DIR" in
 esac
 mkdir -p "$ROOT/runs"
 ln -sfn "$RUN_DIR" "$ROOT/runs/$NAME"
+if [ "${KEEP_OLD:-0}" != "1" ] && [ -n "$NAME" ] && [ "$(basename "$OUT")" = "_neurobridge" ]; then
+  find "$OUT" -mindepth 1 -maxdepth 1 -type d \( -name "*-$NAME" -o -name "*-$NAME-v*" \) \
+    ! -path "$RUN_DIR" -print -exec rm -rf {} + | sed 's/^/removed old run: /'
+fi
 echo "teacher ready: runs/$NAME -> $RUN_DIR"
 cat "$RUN_DIR/result.csv"
