@@ -95,9 +95,9 @@ def plan(a):
             base = crown_base(seed)
             add("teachers/crown8-response-t17", seed,
                 ["--teacher", T_P17, "--montage", "crown8", "--condition", "response"], base=base)
-            add("teachers/crown8-response-t17-init", seed,
+            add("teachers/crown8-response-t17-init", seed,   # best Crown setup: keep the model
                 ["--teacher", T_P17, "--montage", "crown8", "--condition", "response", "--init_from_teacher", "1"],
-                base=base)
+                base=base, save_as=f"sweep_s{S:02d}_crown8_t17init_s{seed}")
             add("teachers/crown8-response-bornagain", seed,
                 ["--teacher", os.path.join(a.runs_dir, ba_name(seed)), "--montage", "crown8",
                  "--condition", "response"], base=base)
