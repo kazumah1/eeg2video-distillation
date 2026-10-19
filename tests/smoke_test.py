@@ -94,7 +94,7 @@ def main():
         print(summ.stdout, summ.stderr)
         raise SystemExit("FAILED: summary")
     print(summ.stdout)
-    assert len(list(csv.DictReader(open(sweep_csv)))) == 58
+    assert len(list(csv.DictReader(open(sweep_csv)))) == 64
     print(f"PASS: {len(rows)} runs logged; example row: top1={rows[0]['top1']} "
           f"teacher_top1={rows[0]['teacher_top1']} fid_cos={rows[0]['fid_cos']}")
 

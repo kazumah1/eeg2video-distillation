@@ -30,6 +30,10 @@ NESTED_32 = NESTED_16 + [
 # "the Crown's channels are in the wrong place for vision".
 OCCIPITAL_8 = ["O1", "Oz", "O2", "PO7", "PO3", "POz", "PO4", "PO8"]
 
+# Diagnostics: which part of the Crown carries the visual signal?
+CROWN_POSTERIOR_2 = ["PO3", "PO4"]                       # the Crown's only posterior sites
+CROWN_ANTERIOR_6 = [c for c in CROWN_8 if c not in CROWN_POSTERIOR_2]
+
 MONTAGES = {
     "all": None,  # every channel in info.json, in file order
     "posterior17": POSTERIOR_17,
@@ -37,6 +41,8 @@ MONTAGES = {
     "nested16": NESTED_16,
     "crown8": CROWN_8,
     "occipital8": OCCIPITAL_8,
+    "crown_po2": CROWN_POSTERIOR_2,
+    "crown_ant6": CROWN_ANTERIOR_6,
 }
 
 

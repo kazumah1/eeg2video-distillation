@@ -77,13 +77,13 @@ class ThingsEEG(Dataset):
                 img_idx = np.arange(n_obj * n_img)
             else:
                 n_rep = arr.shape[2]
-                x = np.asarray(arr, dtype=dtype).reshape(n_obj * n_img * n_rep, *arr.shape[-2:])
+                x = np.array(arr, dtype=dtype).reshape(n_obj * n_img * n_rep, *arr.shape[-2:])  # one RAM copy
                 img_idx = np.repeat(np.arange(n_obj * n_img), n_rep)
             eeg_parts.append(x)
             img_idx_parts.append(img_idx)
             subj_parts.append(np.full(len(img_idx), s))
 
-        self.eeg = torch.from_numpy(np.concatenate(eeg_parts))
+        self.eeg = torch.from_numpy(eeg_parts[0] if len(eeg_parts) == 1 else np.concatenate(eeg_parts))
         self.img_idx = torch.from_numpy(np.concatenate(img_idx_parts)).long()
         self.subject = torch.from_numpy(np.concatenate(subj_parts)).long()
         self.n_channels, self.n_samples = self.eeg.shape[1:]
@@ -130,16 +130,23 @@ def make_synthetic(root, n_obj_train=40, n_obj_test=10, feat_dim=64, n_ch=63, n_
     return eeg_dir, feat_dir
 
 
-def random_smooth(eeg, kernel_size=5, prob=0.3, seed=0):
+def random_smooth(eeg, kernel_size=5, prob=0.3, seed=0, chunk=2048):
     """Vectorized equivalent of NeuroBridge's RandomSmooth applied once at load
     (--eeg_aug smooth --frozen_eeg_prior): each (trial, channel) is replaced, with
-    probability `prob`, by a centered moving average truncated at the edges."""
-    x = eeg.numpy() if isinstance(eeg, torch.Tensor) else eeg
+    probability `prob`, by a centered moving average truncated at the edges.
+    Works in place, chunk by chunk, so single-trial data (~4 GB) fits in memory."""
+    t_ = eeg if isinstance(eeg, torch.Tensor) else torch.from_numpy(eeg)
+    x = t_.numpy()
     n, c, t = x.shape
     h = kernel_size // 2
-    cs = np.concatenate([np.zeros((n, c, 1), np.float64), np.cumsum(x, axis=-1, dtype=np.float64)], axis=-1)
     lo = np.clip(np.arange(t) - h, 0, t)
     hi = np.clip(np.arange(t) + h + 1, 0, t)
-    smoothed = ((cs[..., hi] - cs[..., lo]) / (hi - lo)).astype(x.dtype)
-    mask = np.random.default_rng(seed).random((n, c, 1)) < prob
-    return torch.from_numpy(np.where(mask, smoothed, x))
+    width = (hi - lo).astype(np.float64)
+    mask = np.random.default_rng(seed).random((n, c)) < prob
+    for i in range(0, n, chunk):
+        xb = x[i:i + chunk]
+        cs = np.concatenate([np.zeros(xb.shape[:2] + (1,)), np.cumsum(xb, axis=-1, dtype=np.float64)], axis=-1)
+        sm = ((cs[..., hi] - cs[..., lo]) / width).astype(x.dtype)
+        mb = mask[i:i + chunk]
+        xb[mb] = sm[mb]
+    return t_

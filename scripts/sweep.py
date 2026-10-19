@@ -61,6 +61,9 @@ def plan(a):
                     add(base, seed, ["--teacher", T_ALL, "--montage", m, "--condition", "none"])
                 add(f"channels/{m}-response", seed,
                     ["--teacher", T_ALL, "--montage", m, "--condition", "response"], base=base)
+            # where does the Crown's signal come from? (no-KD only)
+            for m in ["crown_po2", "crown_ant6"]:
+                add(f"channels/{m}-none", seed, ["--teacher", T_ALL, "--montage", m, "--condition", "none"])
         if "losses" in groups:
             base = crown_base(seed)
             for c in ["emb", "kl", "response", "feature", "relational", "all"]:
@@ -73,6 +76,9 @@ def plan(a):
             base = crown_base(seed)
             add("teachers/crown8-response-t17", seed,
                 ["--teacher", T_P17, "--montage", "crown8", "--condition", "response"], base=base)
+            add("teachers/crown8-response-t17-init", seed,
+                ["--teacher", T_P17, "--montage", "crown8", "--condition", "response", "--init_from_teacher", "1"],
+                base=base)
             add("teachers/crown8-response-bornagain", seed,
                 ["--teacher", os.path.join(a.runs_dir, f"sweep_ba8_s{seed}"), "--montage", "crown8",
                  "--condition", "response"], base=base)
