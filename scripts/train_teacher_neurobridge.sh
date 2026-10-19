@@ -2,15 +2,21 @@
 # Train a NeuroBridge teacher with the official code (pinned commit), then
 # expose it as runs/<NAME> so train_student.py can load it.
 #
-# Usage: bash scripts/train_teacher_neurobridge.sh <NAME> <SUBJECT> <CHANNELS> [extra train.py flags]
+# Usage: bash scripts/train_teacher_neurobridge.sh <NAME> <SUBJECTS> <CHANNELS> [extra train.py flags]
+#   SUBJECTS = one subject (8) or a comma list for a multi-subject teacher (1,2,3,4,5,6,7,9,10)
 #   CHANNELS = "all" (63) or "posterior17" (the published configuration)
 # Example:
 #   bash scripts/train_teacher_neurobridge.sh nb_s08_post17 8 posterior17
 #   bash scripts/train_teacher_neurobridge.sh nb_s08_all 8 all
-# Env: EPOCHS (default 50); PUBLISHED=0 drops the eeg-smoothing / frozen-prior /
+# Env: TEST_SUB (subject NeuroBridge reports on; default: the first of SUBJECTS; it does not
+# affect training), FAST_SMOOTH=1 (vectorized smoothing, see scripts/nb_train_fast.py),
+# EPOCHS (default 50); PUBLISHED=0 drops the eeg-smoothing / frozen-prior /
 # test-image-aug flags of the published intra-subject script (faster load, lower accuracy).
 set -euo pipefail
-NAME=$1; SUB=$2; CHANS=$3; shift 3
+NAME=$1; SUBS=$2; CHANS=$3; shift 3
+TRAIN_IDS=${SUBS//,/ }
+TEST_SUB=${TEST_SUB:-${TRAIN_IDS%% *}}
+FAST_SMOOTH=${FAST_SMOOTH:-0}
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 NB=$ROOT/external/NeuroBridge
 NB_COMMIT=4f59fbb9597dbc1a0a9276a984f4f4c8b43ae7d6
@@ -58,11 +64,12 @@ rm -f "$OUT/last_run.txt"
 cd "$NB"
 # Mirrors scripts/things_eeg/intra-subjects.sh (PUBLISHED=1). ${a[@]+"${a[@]}"} keeps
 # empty arrays safe under set -u on macOS bash 3.2.
-python train.py \
+if [ "$FAST_SMOOTH" = "1" ]; then TRAIN=("$ROOT/scripts/nb_train_fast.py"); else TRAIN=(train.py); fi
+TQDM_DISABLE=1 python "${TRAIN[@]}" \
   --batch_size 1024 --learning_rate 1e-4 --num_epochs "$EPOCHS" \
   --output_dir "$OUT" --output_name "$RUN_NAME" \
   --eeg_encoder_type EEGProject \
-  --train_subject_ids "$SUB" --test_subject_ids "$SUB" \
+  --train_subject_ids $TRAIN_IDS --test_subject_ids "$TEST_SUB" \
   --softplus --img_l2norm --projector linear --feature_dim 512 \
   --image_feature_dir "$DATA/image_feature/RN50" --text_feature_dir "" \
   --eeg_data_dir "$DATA/preprocessed_eeg" \

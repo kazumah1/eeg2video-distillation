@@ -39,10 +39,17 @@ class ThingsEEG(Dataset):
     """
 
     def __init__(self, eeg_dir, feat_dir, subjects, split="train", average=True,
-                 time_window=(0, 250), dtype=np.float32, aug_dir=None, eval_img="augmean"):
+                 time_window=(0, 250), dtype=np.float32, aug_dir=None, eval_img="augmean",
+                 channels=None, fracs=None, frac_seed=1234):
+        """channels: names to load (None = all, kept in file order) -- pooled data only fits
+        in RAM if you load just what the student and teacher use.
+        fracs: {subject: fraction} keeps that fraction of the subject's images (a fixed
+        subset per subject, independent of the training seed), e.g. a short calibration set."""
         assert split in ("train", "test")
         assert eval_img in ("augmean", "augrand", "clean")
-        self.ch_names = load_ch_names(eeg_dir)
+        all_ch = load_ch_names(eeg_dir)
+        ch_idx = list(range(len(all_ch))) if channels is None else sorted(all_ch.index(c) for c in set(channels))
+        self.ch_names = [all_ch[i] for i in ch_idx]
         feats = np.load(os.path.join(feat_dir, f"image_{split}.npy")).astype(np.float32)
         n_obj, n_img, feat_dim = feats.shape
         self.feat_dim = feat_dim
@@ -65,27 +72,43 @@ class ThingsEEG(Dataset):
             r = torch.randint(self.aug_features.shape[0], (n_obj * n_img,), generator=g)
             self.image_features = self.aug_features[r, torch.arange(n_obj * n_img)]
 
-        eeg_parts, img_idx_parts, subj_parts = [], [], []
+        t0, t1 = time_window
+        parts = []
         for s in subjects:
             arr = np.load(os.path.join(eeg_dir, f"sub-{s:02d}", f"{split}.npy"), mmap_mode="r")
             assert arr.shape[:2] == (n_obj, n_img), f"EEG {arr.shape} vs features {feats.shape}"
-            t0, t1 = time_window
-            arr = arr[..., t0:t1]
-            if average:
-                x = np.asarray(arr.mean(axis=2), dtype=dtype)           # (obj, img, C, T)
-                x = x.reshape(n_obj * n_img, *x.shape[-2:])
-                img_idx = np.arange(n_obj * n_img)
-            else:
-                n_rep = arr.shape[2]
-                x = np.array(arr, dtype=dtype).reshape(n_obj * n_img * n_rep, *arr.shape[-2:])  # one RAM copy
-                img_idx = np.repeat(np.arange(n_obj * n_img), n_rep)
-            eeg_parts.append(x)
-            img_idx_parts.append(img_idx)
-            subj_parts.append(np.full(len(img_idx), s))
-
-        self.eeg = torch.from_numpy(eeg_parts[0] if len(eeg_parts) == 1 else np.concatenate(eeg_parts))
-        self.img_idx = torch.from_numpy(np.concatenate(img_idx_parts)).long()
-        self.subject = torch.from_numpy(np.concatenate(subj_parts)).long()
+            flat = arr.reshape(n_obj * n_img, *arr.shape[2:])          # (images, reps, C, T), still on disk
+            imgs = np.arange(n_obj * n_img)
+            f = (fracs or {}).get(s, 1.0)
+            if f < 1.0:
+                k = max(1, int(round(f * len(imgs))))
+                imgs = np.sort(np.random.default_rng(frac_seed + s).permutation(len(imgs))[:k])
+            parts.append((s, flat, imgs))
+        rows_per_img = 1 if average else parts[0][1].shape[1]
+        total = sum(len(imgs) * rows_per_img for _, _, imgs in parts)
+        out = np.empty((total, len(ch_idx), min(t1, parts[0][1].shape[-1]) - t0), dtype=dtype)
+        img_idx = np.empty(total, dtype=np.int64)
+        subj = np.empty(total, dtype=np.int64)
+        pos = 0
+        for s, flat, imgs in parts:
+            n_rep = flat.shape[1]
+            step = max(1, int(2.5e8 // (n_rep * flat.shape[2] * flat.shape[3] * 4)))  # ~250 MB reads
+            for i in range(0, len(imgs), step):
+                chunk = imgs[i:i + step]
+                block = flat[chunk][:, :, ch_idx, t0:t1]                  # (b, reps, C, T) in RAM
+                if average:
+                    out[pos:pos + len(chunk)] = block.mean(axis=1)
+                    img_idx[pos:pos + len(chunk)] = chunk
+                    pos += len(chunk)
+                else:
+                    b = len(chunk) * n_rep
+                    out[pos:pos + b] = block.reshape(b, *block.shape[2:])
+                    img_idx[pos:pos + b] = np.repeat(chunk, n_rep)
+                    pos += b
+            subj[pos - len(imgs) * rows_per_img:pos] = s
+        self.eeg = torch.from_numpy(out)
+        self.img_idx = torch.from_numpy(img_idx)
+        self.subject = torch.from_numpy(subj)
         self.n_channels, self.n_samples = self.eeg.shape[1:]
 
     def __len__(self):
@@ -105,26 +128,29 @@ class ThingsEEG(Dataset):
         return self.eeg[i], self.image_features[j], j
 
 
-def make_synthetic(root, n_obj_train=40, n_obj_test=10, feat_dim=64, n_ch=63, n_t=250, seed=0):
-    """Tiny fake dataset in the same layout, for smoke tests without downloads."""
+def make_synthetic(root, n_obj_train=40, n_obj_test=10, feat_dim=64, n_ch=63, n_t=250, seed=0, n_subjects=1):
+    """Tiny fake dataset in the real layout, for smoke tests without downloads.
+    Subjects share the image->EEG mapping (plus their own noise), so pooling helps a little.
+    Returns (eeg_dir, feat_dir); augmented features are in <feat_dir>/aug."""
     from .montages import CROWN_8, POSTERIOR_17, NESTED_32
     rng = np.random.default_rng(seed)
     names = list(dict.fromkeys(NESTED_32 + POSTERIOR_17 + CROWN_8))
     names += [f"X{i}" for i in range(n_ch - len(names))]
     eeg_dir, feat_dir = os.path.join(root, "eeg"), os.path.join(root, "feat")
-    os.makedirs(os.path.join(eeg_dir, "sub-01"), exist_ok=True)
-    os.makedirs(feat_dir, exist_ok=True)
+    aug_dir = os.path.join(feat_dir, "aug")
+    os.makedirs(aug_dir, exist_ok=True)
+    os.makedirs(eeg_dir, exist_ok=True)
     with open(os.path.join(eeg_dir, "info.json"), "w") as f:
         json.dump({"ch_names": names}, f)
     mix = rng.normal(size=(feat_dim, n_ch * n_t)).astype(np.float32) / np.sqrt(feat_dim)
     for split, n_obj, n_img, n_rep in [("train", n_obj_train, 10, 4), ("test", n_obj_test, 1, 8)]:
         f_ = rng.normal(size=(n_obj, n_img, feat_dim)).astype(np.float32)
         sig = (f_.reshape(-1, feat_dim) @ mix).reshape(n_obj, n_img, 1, n_ch, n_t)
-        x = sig + rng.normal(scale=2.0, size=(n_obj, n_img, n_rep, n_ch, n_t)).astype(np.float32)
-        np.save(os.path.join(eeg_dir, "sub-01", f"{split}.npy"), x.astype(np.float32))
+        for sub in range(1, n_subjects + 1):
+            os.makedirs(os.path.join(eeg_dir, f"sub-{sub:02d}"), exist_ok=True)
+            x = sig + rng.normal(scale=2.0, size=(n_obj, n_img, n_rep, n_ch, n_t)).astype(np.float32)
+            np.save(os.path.join(eeg_dir, f"sub-{sub:02d}", f"{split}.npy"), x.astype(np.float32))
         np.save(os.path.join(feat_dir, f"image_{split}.npy"), f_)
-        aug_dir = os.path.join(feat_dir, "aug")
-        os.makedirs(aug_dir, exist_ok=True)
         aug = f_[None] + rng.normal(scale=0.3, size=(3,) + f_.shape).astype(np.float32)
         np.save(os.path.join(aug_dir, f"{split}.npy"), aug.astype(np.float32))
     return eeg_dir, feat_dir

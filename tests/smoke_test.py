@@ -33,7 +33,7 @@ def run(args):
 
 def main():
     tmp = tempfile.mkdtemp()
-    eeg_dir, feat_dir = make_synthetic(tmp)
+    eeg_dir, feat_dir = make_synthetic(tmp, n_subjects=3)
     ch = load_ch_names(eeg_dir)
     ds = ThingsEEG(eeg_dir, feat_dir, [1], "train", average=False)
     assert ds.eeg.shape == (40 * 10 * 4, 63, 250), ds.eeg.shape
@@ -78,24 +78,27 @@ def main():
     # Full sweep, every group, 2 seeds, 2 epochs, then the summary.
     sweep_csv = os.path.join(tmp, "sweep.csv")
     sw = [sys.executable, os.path.join(ROOT, "scripts", "sweep.py")]
-    extra = ["--extra", "--eeg_dir", eeg_dir, "--feat_dir", feat_dir, "--aug_dir", aug_dir, "--subject", "1",
+    extra = ["--extra", "--eeg_dir", eeg_dir, "--feat_dir", feat_dir, "--aug_dir", aug_dir,
              "--batch_size", "64", "--eval_every", "1", "--device", "cpu"]
     for _ in range(2):  # second pass must find everything done
         out = subprocess.run(sw + ["run", "--groups", "all", "--seeds", "0", "1", "--epochs", "2",
-                                   "--teacher_all", tdir, "--teacher_post17", tdir17,
+                                   "--teacher_all", tdir, "--teacher_post17", tdir17, "--subject", "1",
+                                   "--teacher_pool", tdir17, "--teacher_loso", tdir17, "--pool_subjects", "1", "2", "3",
                                    "--runs_dir", os.path.join(tmp, "runs"), "--results_csv", sweep_csv] + extra,
                              capture_output=True, text=True)
         if out.returncode != 0:
             print(out.stdout[-3000:], out.stderr[-3000:])
             raise SystemExit("FAILED: sweep")
         print(out.stdout.splitlines()[0])
+    assert "0 to run" in out.stdout.splitlines()[0], "resume failed"
     summ = subprocess.run(sw + ["summary", "--results_csv", sweep_csv], capture_output=True, text=True)
     if summ.returncode != 0:
         print(summ.stdout, summ.stderr)
         raise SystemExit("FAILED: summary")
     print(summ.stdout)
     n_rows = len(list(csv.DictReader(open(sweep_csv))))
-    assert n_rows == 2 * (33 + 3 * 8), n_rows  # 33 single-row runs + 3 agnostic runs x 8 montages, per seed
+    # per seed: 33 single-row runs + 3 agnostic runs x 8 montages + 3 pooled runs x 3 subjects + 6 loso runs
+    assert n_rows == 2 * (33 + 3 * 8 + 3 * 3 + 6), n_rows
     print(f"PASS: {len(rows)} runs logged; example row: top1={rows[0]['top1']} "
           f"teacher_top1={rows[0]['teacher_top1']} fid_cos={rows[0]['fid_cos']}")
 

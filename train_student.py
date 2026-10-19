@@ -27,11 +27,11 @@ import torch
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
 from eegdistill import losses  # noqa: E402
-from eegdistill.checkpoints import load_run, save_run  # noqa: E402
+from eegdistill.checkpoints import load_run, save_run, teacher_channel_names  # noqa: E402
 from eegdistill.data import ThingsEEG, random_smooth  # noqa: E402
 from eegdistill.evaluate import evaluate  # noqa: E402
 from eegdistill.models import EEGImageModel, init_from_teacher  # noqa: E402
-from eegdistill.montages import resolve  # noqa: E402
+from eegdistill.montages import MONTAGES, resolve  # noqa: E402
 
 PRESETS = {  # weights on each distillation term
     "none":       dict(w_emb=0.0, w_kl=0.0, w_feat=0.0, w_rel=0.0),
@@ -53,7 +53,17 @@ def parse():
                    help="augmented image features (what NeuroBridge teachers train on); '' = clean only")
     p.add_argument("--eval_img", default="augmean", choices=["augmean", "augrand", "clean"],
                    help="test image features: mean over augmented copies (default), one fixed random copy, or clean")
-    p.add_argument("--subject", type=int, default=8)
+    p.add_argument("--subject", type=int, default=8, help="target subject (test set; train set unless overridden)")
+    p.add_argument("--train_subjects", default="",
+                   help="comma list of subjects whose full train data is used, e.g. 1,2,3 (default: --subject). "
+                        "'none' = no other subjects (use with --target_frac)")
+    p.add_argument("--target_frac", type=float, default=0.0,
+                   help="also train on this fraction of --subject's own train images (a fixed subset), "
+                        "e.g. 0.1 = a short calibration set; ignored if --subject is in --train_subjects")
+    p.add_argument("--eval_subjects", default="",
+                   help="comma list of subjects to test on, one CSV row each (default: --subject)")
+    p.add_argument("--load_channels", default="auto", choices=["auto", "all"],
+                   help="auto: load only the student's and teacher's channels (needed to pool many subjects in RAM)")
     p.add_argument("--teacher", required=True, help="run dir with train_config.json + checkpoint")
     p.add_argument("--teacher_ckpt", default="checkpoint_last.pth")
     p.add_argument("--montage", default="crown8", help="montage name in montages.py")
@@ -96,6 +106,20 @@ def seed_all(seed):
     torch.cuda.manual_seed_all(seed)
 
 
+def parse_subjects(a):
+    """-> (subjects to load, {subject: fraction})."""
+    if not a.train_subjects:
+        return [a.subject], {}
+    subs = [] if a.train_subjects == "none" else [int(x) for x in a.train_subjects.split(",")]
+    fracs = {}
+    if a.target_frac > 0 and a.subject not in subs:
+        subs.append(a.subject)
+        fracs[a.subject] = a.target_frac
+    if not subs:
+        raise SystemExit("--train_subjects none needs --target_frac > 0")
+    return subs, fracs
+
+
 def main():
     a = parse()
     seed_all(a.seed)
@@ -106,18 +130,29 @@ def main():
     dev = torch.device(a.device)
     t0 = time.time()
 
-    print(f">>> loading subject {a.subject} (train_average={a.train_average}, test_average={a.test_average})")
+    train_subjects, fracs = parse_subjects(a)
+    eval_subjects = [int(x) for x in a.eval_subjects.split(",")] if a.eval_subjects else [a.subject]
+    print(f">>> train subjects {train_subjects} fracs {fracs or '-'} | test subjects {eval_subjects} "
+          f"(train_average={a.train_average}, test_average={a.test_average})")
     aug_dir = a.aug_dir if a.aug_dir and os.path.isdir(a.aug_dir) else None
     if a.aug_dir and not aug_dir:
         print(f"WARNING: {a.aug_dir} not found; using clean image features (mismatched with an image-aug teacher)")
-    train = ThingsEEG(a.eeg_dir, a.feat_dir, [a.subject], "train", average=bool(a.train_average), aug_dir=aug_dir)
-    test = ThingsEEG(a.eeg_dir, a.feat_dir, [a.subject], "test", average=bool(a.test_average),
-                     aug_dir=aug_dir, eval_img=a.eval_img)
+    channels = None
+    if a.load_channels == "auto":
+        t_names, s_names = teacher_channel_names(a.teacher), MONTAGES.get(a.montage, a.montage.split(","))
+        if t_names and s_names:
+            channels = sorted(set(t_names) | set(s_names))
+    train = ThingsEEG(a.eeg_dir, a.feat_dir, train_subjects, "train", average=bool(a.train_average),
+                      aug_dir=aug_dir, channels=channels, fracs=fracs)
+    tests = {s: ThingsEEG(a.eeg_dir, a.feat_dir, [s], "test", average=bool(a.test_average),
+                          aug_dir=aug_dir, eval_img=a.eval_img, channels=channels) for s in eval_subjects}
+    test = tests[eval_subjects[0]]
     if aug_dir:
         print(f"    image features: {train.aug_features.shape[0]} augmented copies per train image; eval={a.eval_img}")
     if a.eeg_smooth:
         train.eeg = random_smooth(train.eeg, seed=a.seed)
-    print(f"    train {tuple(train.eeg.shape)}  test {tuple(test.eeg.shape)}  feat_dim {train.feat_dim}")
+    print(f"    train {tuple(train.eeg.shape)}  test {tuple(test.eeg.shape)} x{len(tests)}  "
+          f"channels loaded {len(train.ch_names)}  feat_dim {train.feat_dim}")
 
     teacher, tcfg, t_chans = load_run(a.teacher, train.ch_names, train.n_samples, train.feat_dim,
                                       device=dev, checkpoint=a.teacher_ckpt)
@@ -144,6 +179,11 @@ def main():
 
     needs_teacher = any(v > 0 for k, v in w.items() if k != "w_task")
     n = len(train)
+    if n < a.batch_size:
+        print(f"WARNING: {n} training trials < batch size {a.batch_size}; using batch size {n}")
+        a.batch_size = n
+    elif n < 4 * a.batch_size:
+        print(f"WARNING: only {n // a.batch_size} batch(es) per epoch; consider a smaller --batch_size")
     curve = []
     for epoch in range(1, a.epochs + 1):
         student.train()
@@ -185,19 +225,25 @@ def main():
         print(f"epoch {epoch:3d} {msg}", flush=True)
 
     # Final-epoch numbers only: picking the best epoch on the test set would leak.
-    res = evaluate(student, test, dev, teacher=teacher)
-    run_name = a.save_as or f"s{a.subject:02d}_{a.montage}_{a.condition}_seed{a.seed}{'_' + a.tag if a.tag else ''}"
-    row = {
-        "time": time.strftime("%Y-%m-%d %H:%M"), "run": run_name, "tag": a.tag,
-        "subject": a.subject, "montage": a.montage, "n_channels": len(s_chans),
-        "teacher": os.path.basename(os.path.normpath(a.teacher)), "teacher_channels": len(t_chans),
-        "condition": a.condition, **w, "kd_tau": a.kd_tau, "img_proj": a.img_proj,
-        "train_average": a.train_average, "eeg_smooth": a.eeg_smooth,
-        "init_from_teacher": a.init_from_teacher, "img_feats": a.eval_img if aug_dir else "clean", "test_average": a.test_average,
-        "epochs": a.epochs, "seed": a.seed, **{k: round(v, 4) if isinstance(v, float) else v for k, v in res.items()},
-        "minutes": round((time.time() - t0) / 60, 1),
-    }
+    rows = []
+    for es, tset in tests.items():
+        res = evaluate(student, tset, dev, teacher=teacher)
+        run_name = a.save_as or f"s{es:02d}_{a.montage}_{a.condition}_seed{a.seed}{'_' + a.tag if a.tag else ''}"
+        rows.append({
+            "time": time.strftime("%Y-%m-%d %H:%M"), "run": run_name, "tag": a.tag,
+            "subject": es, "montage": a.montage, "n_channels": len(s_chans),
+            "train_subjects": "+".join(map(str, train_subjects)), "target_frac": fracs.get(es, 1.0 if es in train_subjects else 0.0),
+            "teacher": os.path.basename(os.path.normpath(a.teacher)), "teacher_channels": len(t_chans),
+            "condition": a.condition, **w, "kd_tau": a.kd_tau, "img_proj": a.img_proj,
+            "train_average": a.train_average, "eeg_smooth": a.eeg_smooth,
+            "init_from_teacher": a.init_from_teacher, "img_feats": a.eval_img if aug_dir else "clean", "test_average": a.test_average,
+            "epochs": a.epochs, "seed": a.seed, **{k: round(v, 4) if isinstance(v, float) else v for k, v in res.items()},
+            "minutes": round((time.time() - t0) / 60, 1),
+        })
+    row = rows[0]
     print(json.dumps(row, indent=1))
+    for r in rows[1:]:
+        print(f"    subject {r['subject']}: top1 {r['top1']:.1f} top5 {r['top5']:.1f} teacher {r.get('teacher_top1', float('nan')):.1f}")
     os.makedirs(os.path.dirname(a.results_csv) or ".", exist_ok=True)
     new = not os.path.exists(a.results_csv)
     fields = list(row)
@@ -208,7 +254,8 @@ def main():
         wr = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
         if new:
             wr.writeheader()
-        wr.writerow(row)
+        for r in rows:
+            wr.writerow(r)
     if a.save_as:
         cfg = {"eeg_encoder_type": "EEGProject", "channel_names": s_chans, "projector": projector,
                "feature_dim": proj_dim, "time_window": [0, train.n_samples],
