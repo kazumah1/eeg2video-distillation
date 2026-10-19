@@ -28,7 +28,7 @@ import torch
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
 from eegdistill import losses  # noqa: E402
 from eegdistill.checkpoints import load_run, save_run  # noqa: E402
-from eegdistill.data import ThingsEEG  # noqa: E402
+from eegdistill.data import ThingsEEG, random_smooth  # noqa: E402
 from eegdistill.evaluate import evaluate  # noqa: E402
 from eegdistill.models import EEGImageModel  # noqa: E402
 from eegdistill.montages import resolve  # noqa: E402
@@ -59,6 +59,8 @@ def parse():
                         "space in every condition); own: train a fresh one")
     p.add_argument("--train_average", type=int, default=1, help="1 = average the 4 train reps")
     p.add_argument("--test_average", type=int, default=1, help="1 = average the 80 test reps")
+    p.add_argument("--eeg_smooth", type=int, default=1,
+                   help="1 = NeuroBridge's one-time random smoothing of train EEG (matches the teacher's training data)")
     p.add_argument("--epochs", type=int, default=50)
     p.add_argument("--batch_size", type=int, default=1024)
     p.add_argument("--lr", type=float, default=1e-4)
@@ -97,6 +99,8 @@ def main():
     print(f">>> loading subject {a.subject} (train_average={a.train_average}, test_average={a.test_average})")
     train = ThingsEEG(a.eeg_dir, a.feat_dir, [a.subject], "train", average=bool(a.train_average))
     test = ThingsEEG(a.eeg_dir, a.feat_dir, [a.subject], "test", average=bool(a.test_average))
+    if a.eeg_smooth:
+        train.eeg = random_smooth(train.eeg, seed=a.seed)
     print(f"    train {tuple(train.eeg.shape)}  test {tuple(test.eeg.shape)}  feat_dim {train.feat_dim}")
 
     teacher, tcfg, t_chans = load_run(a.teacher, train.ch_names, train.n_samples, train.feat_dim,
@@ -169,7 +173,7 @@ def main():
         "subject": a.subject, "montage": a.montage, "n_channels": len(s_chans),
         "teacher": os.path.basename(os.path.normpath(a.teacher)), "teacher_channels": len(t_chans),
         "condition": a.condition, **w, "kd_tau": a.kd_tau, "img_proj": a.img_proj,
-        "train_average": a.train_average, "test_average": a.test_average,
+        "train_average": a.train_average, "eeg_smooth": a.eeg_smooth, "test_average": a.test_average,
         "epochs": a.epochs, "seed": a.seed, **{k: round(v, 4) if isinstance(v, float) else v for k, v in res.items()},
         "minutes": round((time.time() - t0) / 60, 1),
     }
