@@ -86,3 +86,64 @@ RESULTS = '/content/drive/MyDrive/eegdistillation/results.csv'
 pip install torch numpy pandas
 python tests/smoke_test.py
 ```
+
+
+## Controlled representation erasure
+
+Run one subject as a pilot, then repeat `--run SUBJECT RUN_DIR` for each subject
+with their frozen final checkpoint. For NeuroBridge checkpoints trained with an
+augmented evaluation gallery, specify its feature directory and the fixed gallery
+mode. Example for subject 08:
+
+```bash
+FEATURES=data/things_eeg/image_feature/RN50
+python mi_erasure.py \
+  --run 8 runs/nb_s08_all \
+  --eeg-dir data/things_eeg/preprocessed_eeg --feat-dir "$FEATURES" \
+  --aug-dir "$FEATURES/GaussianBlur-GaussianNoise-LowResolution-Mosaic" --eval-img augmean \
+  --annotations /path/to/aligned_annotations.csv \
+  --descriptor edge_density --descriptor contrast --descriptor spatial_frequency \
+  --category coarse_category --repeats 1 4 all > subject-08-erasure.json
+```
+
+Supply one CSV row per image across both splits. Required columns are `split`
+(`train` or `test`), zero-based `index` in flattened (object, image) feature-array
+order, `image_id` (globally unique across splits), and each named property. Verify
+index-to-image alignment against the source stimulus ordering. Record descriptor
+definitions, image transforms, and the annotation source. Use human-annotated
+coarse categories with shared label values across train and test, and treat the
+category result as specific to that label vocabulary.
+
+The runner edits frozen EEG projector outputs before cosine normalization and
+keeps the gallery fixed. It fits an orthogonal projection from train-image
+cross-covariance and draws equal-rank random subspaces with per-image L2
+displacement matching. It reports angular changes separately. This projection
+targets linear cross-covariance before normalization. Fresh ridge probes fitted
+on normalized, edited train embeddings measure target and collateral
+recoverability on normalized test embeddings. All train repetitions are used
+for fitting. Test budgets take nested prefixes in stored repetition order, so
+the trial selection, models, gallery, and train fit are shared across budgets.
+
+Top-1 uses fractions, with tied best scores counted as misses. Inspect baseline
+top-1 beside each intervention, cosine margins, target and collateral probe
+scores, and the target/control angles. The report includes control-minus-target
+effects, paired descriptor-minus-category contrasts, and bootstrap intervals
+resampling subjects. Freeze gallery, descriptors, annotations, strength, and
+ridge before the official run. Prespecify meaningful excess damage and acceptable
+limits for target recovery and collateral changes using development data.
+A change in margin or accuracy alone establishes
+sensitivity to the edit. A property-level interpretation also needs successful
+held-out removal, limited collateral change, and comparable control damage
+potential. If targeted and random edits both reach the accuracy floor, the
+top-1 comparison is inconclusive.
+
+The released MVNN data mixes full-cap channels. A physical Crown8 versus
+occipital8 comparison requires checkpoints and data whose sensor inputs stay
+within the respective montages throughout preprocessing. A sensor–time map
+requires aligned unmixed sensor data or the preprocessing transform. THINGS-EEG2
+uses roughly 200 ms between stimulus onsets, so later time windows may contain
+responses to neighboring images.
+
+```bash
+python -m unittest discover -s tests -p 'test_erasure.py'
+```

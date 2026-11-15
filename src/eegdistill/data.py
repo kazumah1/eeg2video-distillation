@@ -40,12 +40,14 @@ class ThingsEEG(Dataset):
 
     def __init__(self, eeg_dir, feat_dir, subjects, split="train", average=True,
                  time_window=(0, 250), dtype=np.float32, aug_dir=None, eval_img="augmean",
-                 channels=None, fracs=None, frac_seed=1234):
+                 channels=None, fracs=None, frac_seed=1234, repeats=None):
         """channels: names to load (None = all, kept in file order) -- pooled data only fits
         in RAM if you load just what the student and teacher use.
         fracs: {subject: fraction} keeps that fraction of the subject's images (a fixed
         subset per subject, independent of the training seed), e.g. a short calibration set."""
         assert split in ("train", "test")
+        if repeats is not None and (not average or repeats < 1):
+            raise ValueError("repeats requires averaging and a positive repetition count")
         assert eval_img in ("augmean", "augrand", "clean")
         all_ch = load_ch_names(eeg_dir)
         ch_idx = list(range(len(all_ch))) if channels is None else sorted(all_ch.index(c) for c in set(channels))
@@ -78,6 +80,10 @@ class ThingsEEG(Dataset):
             arr = np.load(os.path.join(eeg_dir, f"sub-{s:02d}", f"{split}.npy"), mmap_mode="r")
             assert arr.shape[:2] == (n_obj, n_img), f"EEG {arr.shape} vs features {feats.shape}"
             flat = arr.reshape(n_obj * n_img, *arr.shape[2:])          # (images, reps, C, T), still on disk
+            if repeats is not None:
+                if repeats > flat.shape[1]:
+                    raise ValueError(f"sub-{s:02d} {split}: only {flat.shape[1]} repetitions available")
+                flat = flat[:, :repeats]
             imgs = np.arange(n_obj * n_img)
             f = (fracs or {}).get(s, 1.0)
             if f < 1.0:
