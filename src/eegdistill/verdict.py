@@ -74,10 +74,16 @@ def classify(report, prop, budget, *, sesoi, floor_margin=0.01, removal_tol=0.1,
     control = np.mean([np.mean([c["top1"] for c in e["controls"]]) for e in edits.values()])
     excess = subject_stats({s: e["excess_damage"]["top1"] for s, e in edits.items()}, seed)
     remaining = _remaining(rows, edits, prop, probe_chance)
+    # Derived targets (residualized, rank-matched) share a family with their source
+    # property: losing the source is expected, not collateral.
+    derived = report.get("derived") or {}
+    root = lambda p: derived.get(p, {}).get("from", p)  # noqa: E731
     others = [p for p in next(iter(rows.values()))["baseline"]["probes"] if p != prop]
+    related = {p: _remaining(rows, edits, p, probe_chance)
+               for p in others if root(p) == root(prop)}
     # Extra fraction of each competing property lost to the target edit beyond controls.
     collateral = {}
-    for other in others:
+    for other in (p for p in others if p not in related):
         kept_target = _remaining(rows, edits, other, probe_chance, "target")
         kept_control = _remaining(rows, edits, other, probe_chance, "control")
         if kept_target is not None and kept_control is not None:
@@ -96,7 +102,7 @@ def classify(report, prop, budget, *, sesoi, floor_margin=0.01, removal_tol=0.1,
         verdict = "bounded_null"
     return {"verdict": verdict, "chance_top1": chance, "excess_top1": excess,
             "target_remaining": remaining, "collateral_extra_loss": collateral,
-            "mean_top1": {"baseline": float(baseline), "target": float(target),
+            "related_remaining": related, "mean_top1": {"baseline": float(baseline), "target": float(target),
                           "control": float(control)}}
 
 
@@ -134,4 +140,25 @@ def montage_contrast(report_a, report_b, prop, budget, *, seed=0):
         "baseline_gap_top1": subject_stats(
             {s: rows_a[s]["baseline"]["top1"] - rows_b[s]["baseline"]["top1"]
              for s in paired}, seed),
+    }
+
+
+def paired_contrast(report, prop_a, prop_b, budget, *, seed=0):
+    """Per-subject excess damage of prop_a minus prop_b in one report.
+
+    Use for the headline comparison (e.g. residualized edges vs rank-1 category):
+    one significant and one non-significant effect does not show they differ.
+    """
+    rows_a, rows_b = _rows(report, prop_a, budget), _rows(report, prop_b, budget)
+    paired = sorted(rows_a.keys() & rows_b.keys(), key=int)
+    if len(paired) < 2:
+        raise ValueError(f"need at least two subjects with both {prop_a} and {prop_b}")
+
+    def excess(rows, prop, s):
+        return rows[s]["interventions"][prop]["excess_damage"]["top1"]
+
+    return {
+        "a": prop_a, "b": prop_b, "budget": budget, "paired_subjects": paired,
+        "excess_top1_a_minus_b": subject_stats(
+            {s: excess(rows_a, prop_a, s) - excess(rows_b, prop_b, s) for s in paired}, seed),
     }

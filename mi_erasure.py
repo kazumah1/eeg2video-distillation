@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
 from eegdistill.checkpoints import load_run, teacher_channel_names
 from eegdistill.data import ThingsEEG, load_ch_names
+from eegdistill.derived import add_derived_labels
 from eegdistill.erasure import evaluate_erasure
 from eegdistill.evaluate import embed
 
@@ -84,12 +85,19 @@ def run_subject(args, subject, run_dir, labels, eeg_info):
             eeg_info.get("normalization") == "mvnn" and len(channels) < len(eeg_info["ch_names"])
         ),
     }
+    train_labels, test_labels, derived = labels["train"], labels["test"], {}
+    if args.residualize or args.rank_matched_category:
+        # Rank-matched category depends on this subject's embeddings, so derive per subject.
+        train_labels, test_labels, derived = add_derived_labels(
+            train_z, train_labels, test_labels, category=args.category,
+            residualize=args.residualize, rank_matched=args.rank_matched_category)
+    report["derived"] = derived
     for n in budgets:
         test = ThingsEEG(**common, split="test", repeats=n, aug_dir=args.aug_dir,
                          eval_img=args.eval_img)
         test_z, gallery = embed(model, test, args.device, args.batch_size)
         report["views"][str(n)] = evaluate_erasure(
-            train_z, test_z, gallery, labels["train"], labels["test"],
+            train_z, test_z, gallery, train_labels, test_labels,
             categorical=(args.category,) if args.category else (), controls=args.controls,
             strength=args.strength, ridge=args.ridge, seed=args.seed,
         )
@@ -153,6 +161,10 @@ def main():
     parser.add_argument("--annotations", type=Path, required=True)
     parser.add_argument("--descriptor", action="append", default=[], metavar="COLUMN")
     parser.add_argument("--category", metavar="COLUMN")
+    parser.add_argument("--residualize", action="append", default=[], metavar="COLUMN",
+                        help="also erase this descriptor residualized on train-category means")
+    parser.add_argument("--rank-matched-category", action="store_true",
+                        help="also erase only the top category direction (rank 1)")
     parser.add_argument("--aug-dir", type=Path)
     parser.add_argument("--eval-img", choices=("clean", "augmean", "augrand"), default="clean")
     parser.add_argument("--repeats", nargs="+", default=["all"], metavar="N_OR_ALL")
@@ -167,6 +179,10 @@ def main():
         parser.error("provide at least one --descriptor or --category column")
     if (args.aug_dir is None) != (args.eval_img == "clean"):
         parser.error("augmented gallery modes require --aug-dir")
+    if (args.residualize or args.rank_matched_category) and not args.category:
+        parser.error("--residualize and --rank-matched-category need --category")
+    if not set(args.residualize) <= set(args.descriptor):
+        parser.error("--residualize columns must also be --descriptor columns")
     if args.batch_size < 1:
         parser.error("--batch-size must be positive")
 
@@ -186,10 +202,13 @@ def main():
     except (OSError, ValueError, KeyError) as exc:
         parser.error(str(exc))
 
+    derived = next(iter(subjects.values()))["derived"]
+    descriptors = args.descriptor + list(derived)
     report = {
         "intervention": "EEG projector output before cosine normalization; fixed image gallery",
         "method": "orthogonal projection of training cross-covariance directions",
-        "annotations": str(args.annotations.resolve()), "descriptors": args.descriptor,
+        "annotations": str(args.annotations.resolve()), "descriptors": descriptors,
+        "derived": derived,
         "category": args.category, "eeg_dir": str(args.eeg_dir.resolve()),
         "eeg_normalization": eeg_info.get("normalization"), "image_counts": sizes,
         "feat_dir": str(args.feat_dir.resolve()), "gallery": args.eval_img,
@@ -197,7 +216,7 @@ def main():
         "controls": args.controls, "strength": args.strength, "ridge": args.ridge,
         "seed": args.seed, "tie_policy": "a tie for top score counts as a miss",
         "repetition_policy": "prefix of stored EEG repetitions; all train repetitions",
-        "subjects": subjects, "summary": summarize(subjects, args.descriptor, args.category, args.seed),
+        "subjects": subjects, "summary": summarize(subjects, descriptors, args.category, args.seed),
     }
     json.dump(report, sys.stdout, indent=2, allow_nan=False)
     print()

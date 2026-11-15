@@ -1,6 +1,8 @@
 """Decision-table verdicts (and optional montage contrast) for mi_erasure.py reports.
 
   python mi_verdict.py occ8.json --sesoi 0.02 --probe-chance coarse_category=0.1
+  python mi_verdict.py occ8.json --contrast edge_density_resid_category category_rank1 \
+      --sesoi 0.02 --probe-chance coarse_category=0.1
   python mi_verdict.py occ8.json --vs crown8.json --sesoi 0.02 --probe-chance coarse_category=0.1
 
 Freeze --sesoi and the tolerances before looking at the official run.
@@ -13,7 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
-from eegdistill.verdict import classify, montage_contrast
+from eegdistill.verdict import classify, montage_contrast, paired_contrast
 
 
 def main():
@@ -25,6 +27,9 @@ def main():
                         help="smallest top-1 excess damage worth reporting (fraction)")
     parser.add_argument("--probe-chance", action="append", default=[], metavar="NAME=P",
                         help="chance balanced accuracy for each categorical property")
+    parser.add_argument("--contrast", nargs=2, action="append", default=[], metavar=("A", "B"),
+                        help="per-subject excess damage A minus B, e.g. "
+                             "edge_density_resid_category category_rank1")
     parser.add_argument("--floor-margin", type=float, default=0.01)
     parser.add_argument("--removal-tol", type=float, default=0.1)
     parser.add_argument("--collateral-tol", type=float, default=0.25)
@@ -47,6 +52,11 @@ def main():
                                seed=args.seed)
                 for prop in props
             }
+        out["contrasts"] = {
+            budget: {f"{a}_minus_{b}": paired_contrast(report, a, b, budget, seed=args.seed)
+                     for a, b in args.contrast}
+            for budget in budgets
+        }
         if args.vs:
             other = json.loads(args.vs.read_text())
             out["montage_contrast"] = {

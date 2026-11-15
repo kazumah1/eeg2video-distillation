@@ -101,11 +101,50 @@ class VerdictTest(unittest.TestCase):
         self.assertEqual(classify(report(wide), "edges", "80", **kwargs)["verdict"],
                          "inconclusive")
 
+    def test_derived_target_counts_its_parent_as_related_not_collateral(self):
+        from eegdistill.verdict import classify
+
+        def resid_view():
+            v = view(target_top1=0.10, control_top1=0.28)
+            for scores in [v["baseline"], v["interventions"]["edges"]["target"],
+                           *v["interventions"]["edges"]["controls"]]:
+                scores["probes"]["edges_resid"] = {"r2": scores["probes"]["edges"]["r2"]}
+            # Residualized edit wipes most raw edge signal; category untouched.
+            v["interventions"]["edges"]["target"]["probes"]["edges"] = {"r2": 0.1}
+            v["interventions"]["edges_resid"] = v["interventions"].pop("edges")
+            return v
+
+        r = report([resid_view() for _ in range(10)],
+                   derived={"edges_resid": {"kind": "residualized", "from": "edges",
+                                            "on": "category"}})
+        result = classify(r, "edges_resid", "80", sesoi=0.02, probe_chance=CHANCE)
+        self.assertEqual(result["verdict"], "specific_effect")
+        self.assertEqual(set(result["collateral_extra_loss"]), {"category"})
+        self.assertAlmostEqual(result["related_remaining"]["edges"], 0.1 / 0.6)
+
     def test_categorical_probe_without_chance_level_is_rejected(self):
         from eegdistill.verdict import classify
 
         with self.assertRaises(ValueError):
             classify(report([view(), view()]), "edges", "80", sesoi=0.02)
+
+
+class PairedContrastTest(unittest.TestCase):
+    def test_contrast_differences_two_properties_within_each_subject(self):
+        from eegdistill.verdict import paired_contrast
+
+        def two_edits(i):
+            v = view(target_top1=0.10, control_top1=0.28)  # edges: D = 0.18
+            cat = view(target_top1=0.20 + 0.01 * i, control_top1=0.28)  # D = 0.08 - 0.01 i
+            v["interventions"]["cat_rank1"] = cat["interventions"]["edges"]
+            return v
+
+        r = report([two_edits(i) for i in range(10)])
+        result = paired_contrast(r, "edges", "cat_rank1", "80")
+        self.assertEqual(result["excess_top1_a_minus_b"]["n_subjects"], 10)
+        self.assertAlmostEqual(result["excess_top1_a_minus_b"]["by_subject"]["1"], 0.10)
+        self.assertAlmostEqual(result["excess_top1_a_minus_b"]["by_subject"]["10"], 0.19)
+        self.assertGreater(result["excess_top1_a_minus_b"]["ci95"][0], 0)
 
 
 class MontageContrastTest(unittest.TestCase):
