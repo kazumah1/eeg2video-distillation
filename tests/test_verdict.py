@@ -143,6 +143,22 @@ class VerdictTest(unittest.TestCase):
         result = classify(specific, "edges", "80", sesoi=0.02, probe_chance=CHANCE)
         self.assertEqual(result["verdict"], "specific_effect")
 
+    def test_shuffled_copies_are_not_scored_as_collateral_probes(self):
+        from eegdistill.verdict import classify
+
+        def with_shuffled_probe():
+            v = view(target_top1=0.10, control_top1=0.28)
+            edit = v["interventions"]["edges"]
+            for scores in [v["baseline"], edit["target"], *edit["controls"]]:
+                scores["probes"]["category_shuf0"] = {"balanced_accuracy": 0.3}
+            return v
+
+        r = report([with_shuffled_probe() for _ in range(10)],
+                   derived={"category_shuf0": {"kind": "shuffled", "from": "category"}})
+        result = classify(r, "edges", "80", sesoi=0.02, probe_chance=CHANCE)
+        self.assertEqual(result["verdict"], "specific_effect")
+        self.assertEqual(set(result["collateral_extra_loss"]), {"category"})
+
     def test_categorical_probe_without_chance_level_is_rejected(self):
         from eegdistill.verdict import classify
 
@@ -192,6 +208,31 @@ class MontageContrastTest(unittest.TestCase):
         b = report([view(), view()], strength=0.5)
         with self.assertRaisesRegex(ValueError, "strength"):
             montage_contrast(a, b, "edges", "80")
+
+
+class MergeReportsTest(unittest.TestCase):
+    def test_per_subject_reports_merge_into_one_report_for_verdicts(self):
+        from eegdistill.verdict import classify, merge_reports
+
+        parts = [report([view(target_top1=0.10 + 0.01 * i, control_top1=0.28)]) for i in range(10)]
+        for i, part in enumerate(parts, 1):  # one runner call per subject: --run i
+            part["subjects"] = {str(i): part["subjects"]["1"]}
+            part["summary"] = {"80": {"stale": True}}
+        merged = merge_reports(parts)
+        self.assertEqual(sorted(merged["subjects"], key=int), [str(i) for i in range(1, 11)])
+        self.assertNotIn("summary", merged)  # per-subject summaries do not pool
+        result = classify(merged, "edges", "80", sesoi=0.02, probe_chance=CHANCE)
+        self.assertEqual(result["excess_top1"]["n_subjects"], 10)
+
+    def test_merge_rejects_mismatched_settings_and_duplicate_subjects(self):
+        from eegdistill.verdict import merge_reports
+
+        with self.assertRaisesRegex(ValueError, "controls"):
+            merge_reports([report([view()]), report([view()], controls=5)])
+        with self.assertRaisesRegex(ValueError, "derived"):
+            merge_reports([report([view()]), report([view()], derived={"x": {}})])
+        with self.assertRaisesRegex(ValueError, "subject 1"):
+            merge_reports([report([view()]), report([view()])])
 
 
 if __name__ == "__main__":

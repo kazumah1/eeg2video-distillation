@@ -4,6 +4,9 @@
   python mi_verdict.py occ8.json --contrast edge_density_resid_category category_rank1 \
       --sesoi 0.02 --probe-chance coarse_category=0.1
   python mi_verdict.py occ8.json --vs crown8.json --sesoi 0.02 --probe-chance coarse_category=0.1
+  python mi_verdict.py results/erasure/sub-*.json --sesoi 0.02 --probe-chance coarse_category=0.1
+
+Several report files (one runner call per subject) are pooled with merge_reports.
 
 Freeze --sesoi and the tolerances before looking at the official run.
 """
@@ -15,13 +18,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
-from eegdistill.verdict import classify, montage_contrast, paired_contrast
+from eegdistill.verdict import classify, merge_reports, montage_contrast, paired_contrast
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("report", type=Path, help="mi_erasure.py JSON (montage a)")
+    parser.add_argument("report", type=Path, nargs="+",
+                        help="mi_erasure.py JSON(s) for montage a; several are pooled")
     parser.add_argument("--vs", type=Path, help="second mi_erasure.py JSON (montage b)")
     parser.add_argument("--sesoi", type=float, required=True,
                         help="smallest top-1 excess damage worth reporting (fraction)")
@@ -38,12 +42,12 @@ def main():
 
     try:
         chance = {k: float(v) for k, v in (item.split("=", 1) for item in args.probe_chance)}
-        report = json.loads(args.report.read_text())
+        report = merge_reports([json.loads(p.read_text()) for p in args.report])
         props = report["descriptors"] + ([report["category"]] if report.get("category") else [])
         props = [p for p in props
                  if (report.get("derived") or {}).get(p, {}).get("kind") != "shuffled"]
         budgets = sorted({b for s in report["subjects"].values() for b in s["views"]}, key=int)
-        out = {"settings": vars(args) | {"report": str(args.report),
+        out = {"settings": vars(args) | {"report": [str(p) for p in args.report],
                                           "vs": str(args.vs) if args.vs else None},
                "verdicts": {}}
         for budget in budgets:

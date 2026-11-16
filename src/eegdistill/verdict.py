@@ -78,7 +78,9 @@ def classify(report, prop, budget, *, sesoi, floor_margin=0.01, removal_tol=0.1,
     # property: losing the source is expected, not collateral.
     derived = report.get("derived") or {}
     root = lambda p: derived.get(p, {}).get("from", p)  # noqa: E731
-    others = [p for p in next(iter(rows.values()))["baseline"]["probes"] if p != prop]
+    # Shuffled copies are meaningless labels: not targets of collateral concern.
+    others = [p for p in next(iter(rows.values()))["baseline"]["probes"]
+              if p != prop and derived.get(p, {}).get("kind") != "shuffled"]
     related = {p: _remaining(rows, edits, p, probe_chance)
                for p in others if root(p) == root(prop)}
     # Extra fraction of each competing property lost to the target edit beyond controls.
@@ -175,3 +177,27 @@ def paired_contrast(report, prop_a, prop_b, budget, *, seed=0):
         "excess_top1_a_minus_b": subject_stats(
             {s: excess(rows_a, prop_a, s) - excess(rows_b, prop_b, s) for s in paired}, seed),
     }
+
+
+# Settings that must agree before per-subject runner outputs pool into one report.
+MERGE_SETTINGS = SHARED_SETTINGS + ("derived", "seed", "eeg_normalization", "method")
+
+
+def merge_reports(reports):
+    """Pool per-subject mi_erasure reports (one runner call each) into one report.
+
+    Settings must match exactly; each subject may appear once. The per-report
+    summaries are dropped: they cover one subject each and do not pool.
+    """
+    first, *rest = reports
+    merged = {k: v for k, v in first.items() if k not in ("subjects", "summary")}
+    merged["subjects"] = dict(first["subjects"])
+    for other in rest:
+        for key in MERGE_SETTINGS:
+            if other.get(key) != first.get(key):
+                raise ValueError(f"reports differ in {key}: {first.get(key)!r} vs {other.get(key)!r}")
+        for subject, sub in other["subjects"].items():
+            if subject in merged["subjects"]:
+                raise ValueError(f"subject {subject} appears in more than one report")
+            merged["subjects"][subject] = sub
+    return merged
