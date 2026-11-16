@@ -89,6 +89,18 @@ def classify(report, prop, budget, *, sesoi, floor_margin=0.01, removal_tol=0.1,
         if kept_target is not None and kept_control is not None:
             collateral[other] = kept_control - kept_target
 
+    # Prefer concept-shuffled copies of this property as the specificity baseline:
+    # random subspaces understate the damage any data-fitted erasure does.
+    shuffled = [p for p, d in derived.items() if d.get("kind") == "shuffled" and d["from"] == prop]
+    vs_shuffled = None
+    if shuffled:
+        vs_shuffled = subject_stats({
+            s: e["excess_damage"]["top1"] - np.mean([
+                report["subjects"][s]["views"][budget]["interventions"][p]["excess_damage"]["top1"]
+                for p in shuffled])
+            for s, e in edits.items()}, seed)
+    decide = vs_shuffled or excess
+
     verdict = "inconclusive"
     if baseline <= floor or (target <= floor and control <= floor):
         verdict = "floor"
@@ -96,11 +108,12 @@ def classify(report, prop, budget, *, sesoi, floor_margin=0.01, removal_tol=0.1,
         verdict = "incomplete_removal"
     elif any(loss > collateral_tol for loss in collateral.values()):
         verdict = "collateral"
-    elif excess["ci95"] and excess["ci95"][0] > 0 and excess["mean"] >= sesoi:
+    elif decide["ci95"] and decide["ci95"][0] > 0 and decide["mean"] >= sesoi:
         verdict = "specific_effect"
-    elif excess["ci95"] and -sesoi < excess["ci95"][0] and excess["ci95"][1] < sesoi:
+    elif decide["ci95"] and -sesoi < decide["ci95"][0] and decide["ci95"][1] < sesoi:
         verdict = "bounded_null"
     return {"verdict": verdict, "chance_top1": chance, "excess_top1": excess,
+            "excess_vs_shuffled_top1": vs_shuffled,
             "target_remaining": remaining, "collateral_extra_loss": collateral,
             "related_remaining": related, "mean_top1": {"baseline": float(baseline), "target": float(target),
                           "control": float(control)}}

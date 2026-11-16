@@ -66,6 +66,39 @@ class RankMatchedCategoryTest(unittest.TestCase):
         self.assertEqual(rank1["target"]["probes"]["cat"]["balanced_accuracy"], 0.75)
 
 
+class ShuffledControlTest(unittest.TestCase):
+    def test_shuffles_move_whole_train_concepts_and_keep_test_labels_seen(self):
+        from eegdistill.derived import add_derived_labels
+
+        groups = np.repeat([0, 1, 2, 3], 2)
+        train = {"edges": np.arange(8.0), "cat": np.repeat(list("AABB"), 2)}
+        test = {"edges": np.array([10.0, 20.0, 30.0]), "cat": np.array(["A", "B", "B"])}
+        new_train, new_test, derived = add_derived_labels(
+            np.zeros((8, 3)), train, test, category="cat", rank_matched=False,
+            shuffles=4, train_groups=groups, seed=0)
+        blocks = {(0.0, 1.0), (2.0, 3.0), (4.0, 5.0), (6.0, 7.0)}
+        for k in range(4):
+            edges = new_train[f"edges_shuf{k}"]
+            self.assertEqual({tuple(edges[groups == g]) for g in range(4)}, blocks)
+            cats = new_train[f"cat_shuf{k}"]
+            self.assertTrue(all(len(set(cats[groups == g])) == 1 for g in range(4)))
+            self.assertEqual(sorted(cats), sorted(train["cat"]))
+            self.assertEqual(sorted(new_test[f"edges_shuf{k}"]), [10.0, 20.0, 30.0])
+            self.assertEqual(sorted(new_test[f"cat_shuf{k}"]), ["A", "B", "B"])
+            self.assertEqual(derived[f"edges_shuf{k}"], {"kind": "shuffled", "from": "edges"})
+        # Not every shuffle is the identity.
+        self.assertFalse(all(np.array_equal(new_train[f"edges_shuf{k}"], train["edges"])
+                             for k in range(4)))
+
+    def test_unequal_concept_sizes_are_rejected(self):
+        from eegdistill.derived import add_derived_labels
+
+        with self.assertRaises(ValueError):
+            add_derived_labels(np.zeros((3, 2)), {"e": np.arange(3.0), "c": np.array(list("AAB"))},
+                               {"e": np.arange(2.0), "c": np.array(list("AB"))}, category="c",
+                               rank_matched=False, shuffles=1, train_groups=np.array([0, 0, 1]))
+
+
 class RunnerTest(unittest.TestCase):
     def test_runner_adds_residualized_and_rank_matched_erasures(self):
         import csv
@@ -97,7 +130,7 @@ class RunnerTest(unittest.TestCase):
                 "--feat-dir", feat, "--annotations", str(annotations),
                 "--run", "1", str(checkpoint), "--descriptor", "edge_density",
                 "--category", "category", "--residualize", "edge_density",
-                "--rank-matched-category", "--controls", "2",
+                "--rank-matched-category", "--shuffled-controls", "2", "--controls", "2",
             ], capture_output=True, text=True)
             self.assertEqual(proc.returncode, 0, proc.stderr)
             report = json.loads(proc.stdout)
@@ -108,6 +141,11 @@ class RunnerTest(unittest.TestCase):
             self.assertEqual(edits["category_rank1"]["rank"], 1)
             self.assertEqual(edits["category"]["rank"], 2)
             self.assertIn("edge_density_resid_category", report["summary"]["8"]["effects"])
+            self.assertEqual(report["derived"]["category_shuf1"], {"kind": "shuffled",
+                                                                 "from": "category"})
+            # Shuffled category stays categorical: probed by balanced accuracy.
+            self.assertIn("balanced_accuracy",
+                          edits["category_shuf0"]["target"]["probes"]["category_shuf0"])
 
 
 if __name__ == "__main__":

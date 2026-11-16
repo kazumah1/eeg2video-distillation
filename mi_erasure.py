@@ -86,11 +86,15 @@ def run_subject(args, subject, run_dir, labels, eeg_info):
         ),
     }
     train_labels, test_labels, derived = labels["train"], labels["test"], {}
-    if args.residualize or args.rank_matched_category:
+    if args.residualize or args.rank_matched_category or args.shuffled_controls:
         # Rank-matched category depends on this subject's embeddings, so derive per subject.
+        # Train images are stored (object, image)-flattened, so index // n_img is the concept.
+        n_img = np.load(args.feat_dir / "image_train.npy", mmap_mode="r").shape[1]
         train_labels, test_labels, derived = add_derived_labels(
             train_z, train_labels, test_labels, category=args.category,
-            residualize=args.residualize, rank_matched=args.rank_matched_category)
+            residualize=args.residualize, rank_matched=args.rank_matched_category,
+            shuffles=args.shuffled_controls,
+            train_groups=np.arange(len(train_z)) // n_img, seed=args.seed)
     report["derived"] = derived
     for n in budgets:
         test = ThingsEEG(**common, split="test", repeats=n, aug_dir=args.aug_dir,
@@ -98,7 +102,9 @@ def run_subject(args, subject, run_dir, labels, eeg_info):
         test_z, gallery = embed(model, test, args.device, args.batch_size)
         report["views"][str(n)] = evaluate_erasure(
             train_z, test_z, gallery, train_labels, test_labels,
-            categorical=(args.category,) if args.category else (), controls=args.controls,
+            categorical=tuple(name for name in train_labels if name == args.category
+                              or derived.get(name, {}) == {"kind": "shuffled",
+                                                           "from": args.category}), controls=args.controls,
             strength=args.strength, ridge=args.ridge, seed=args.seed,
         )
     return report
@@ -163,6 +169,8 @@ def main():
     parser.add_argument("--category", metavar="COLUMN")
     parser.add_argument("--residualize", action="append", default=[], metavar="COLUMN",
                         help="also erase this descriptor residualized on train-category means")
+    parser.add_argument("--shuffled-controls", type=int, default=0, metavar="N",
+                        help="also erase N concept-shuffled copies of every property")
     parser.add_argument("--rank-matched-category", action="store_true",
                         help="also erase only the top category direction (rank 1)")
     parser.add_argument("--aug-dir", type=Path)
@@ -179,8 +187,10 @@ def main():
         parser.error("provide at least one --descriptor or --category column")
     if (args.aug_dir is None) != (args.eval_img == "clean"):
         parser.error("augmented gallery modes require --aug-dir")
-    if (args.residualize or args.rank_matched_category) and not args.category:
-        parser.error("--residualize and --rank-matched-category need --category")
+    if (args.residualize or args.rank_matched_category or args.shuffled_controls) \
+            and not args.category:
+        parser.error("--residualize, --rank-matched-category and --shuffled-controls "
+                     "need --category")
     if not set(args.residualize) <= set(args.descriptor):
         parser.error("--residualize columns must also be --descriptor columns")
     if args.batch_size < 1:

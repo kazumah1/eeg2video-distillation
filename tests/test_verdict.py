@@ -122,6 +122,27 @@ class VerdictTest(unittest.TestCase):
         self.assertEqual(set(result["collateral_extra_loss"]), {"category"})
         self.assertAlmostEqual(result["related_remaining"]["edges"], 0.1 / 0.6)
 
+    def test_shuffled_copies_replace_random_edits_as_the_specificity_baseline(self):
+        from eegdistill.verdict import classify
+
+        def with_shuffles(i, shuffled_target):
+            v = view(target_top1=0.10, control_top1=0.28)  # D vs random = 0.18
+            for k in range(2):
+                s = view(target_top1=shuffled_target + 0.001 * (i % 3), control_top1=0.28)
+                v["interventions"][f"edges_shuf{k}"] = s["interventions"]["edges"]
+            return v
+
+        derived = {f"edges_shuf{k}": {"kind": "shuffled", "from": "edges"} for k in range(2)}
+        generic = report([with_shuffles(i, 0.105) for i in range(10)], derived=derived)
+        result = classify(generic, "edges", "80", sesoi=0.02, probe_chance=CHANCE)
+        self.assertGreater(result["excess_top1"]["mean"], 0.17)  # still vs random
+        self.assertAlmostEqual(result["excess_vs_shuffled_top1"]["by_subject"]["1"], 0.005)
+        self.assertEqual(result["verdict"], "bounded_null")
+
+        specific = report([with_shuffles(i, 0.26) for i in range(10)], derived=derived)
+        result = classify(specific, "edges", "80", sesoi=0.02, probe_chance=CHANCE)
+        self.assertEqual(result["verdict"], "specific_effect")
+
     def test_categorical_probe_without_chance_level_is_rejected(self):
         from eegdistill.verdict import classify
 

@@ -40,6 +40,8 @@ def main():
         chance = {k: float(v) for k, v in (item.split("=", 1) for item in args.probe_chance)}
         report = json.loads(args.report.read_text())
         props = report["descriptors"] + ([report["category"]] if report.get("category") else [])
+        props = [p for p in props
+                 if (report.get("derived") or {}).get(p, {}).get("kind") != "shuffled"]
         budgets = sorted({b for s in report["subjects"].values() for b in s["views"]}, key=int)
         out = {"settings": vars(args) | {"report": str(args.report),
                                           "vs": str(args.vs) if args.vs else None},
