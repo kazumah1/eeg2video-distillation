@@ -143,6 +143,28 @@ class VerdictTest(unittest.TestCase):
         result = classify(specific, "edges", "80", sesoi=0.02, probe_chance=CHANCE)
         self.assertEqual(result["verdict"], "specific_effect")
 
+    def test_size_matched_shuffles_can_replace_raw_shuffles_as_the_baseline(self):
+        from eegdistill.verdict import classify
+
+        def with_shuffles(i):
+            v = view(target_top1=0.10, control_top1=0.28)
+            for k in range(2):
+                # Raw shuffled edits are small (top-1 0.26); scaled to the real
+                # edit's size they do almost as much damage (0.105).
+                s = view(target_top1=0.26, control_top1=0.28)["interventions"]["edges"]
+                s["size_matched"] = {"top1": 0.105 + 0.001 * (i % 3), "margin": 0.0}
+                v["interventions"][f"edges_shuf{k}"] = s
+            return v
+
+        derived = {f"edges_shuf{k}": {"kind": "shuffled", "from": "edges"} for k in range(2)}
+        rep = report([with_shuffles(i) for i in range(10)], derived=derived)
+        raw = classify(rep, "edges", "80", sesoi=0.02, probe_chance=CHANCE)
+        self.assertEqual(raw["verdict"], "specific_effect")
+        matched = classify(rep, "edges", "80", sesoi=0.02, probe_chance=CHANCE, size_matched=True)
+        self.assertAlmostEqual(matched["excess_vs_size_matched_shuffled_top1"]["by_subject"]["1"], 0.005)
+        self.assertEqual(matched["verdict"], "bounded_null")
+        self.assertIsNotNone(raw["excess_vs_size_matched_shuffled_top1"])  # reported either way
+
     def test_shuffled_copies_are_not_scored_as_collateral_probes(self):
         from eegdistill.verdict import classify
 

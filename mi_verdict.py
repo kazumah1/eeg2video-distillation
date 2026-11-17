@@ -34,6 +34,8 @@ def main():
     parser.add_argument("--contrast", nargs=2, action="append", default=[], metavar=("A", "B"),
                         help="per-subject excess damage A minus B, e.g. "
                              "edge_density_resid_category category_rank1")
+    parser.add_argument("--size-matched", action="store_true",
+                        help="decide against shuffled copies rescaled to the target edit size")
     parser.add_argument("--floor-margin", type=float, default=0.01)
     parser.add_argument("--removal-tol", type=float, default=0.1)
     parser.add_argument("--collateral-tol", type=float, default=0.25)
@@ -55,7 +57,7 @@ def main():
                 prop: classify(report, prop, budget, sesoi=args.sesoi,
                                floor_margin=args.floor_margin, removal_tol=args.removal_tol,
                                collateral_tol=args.collateral_tol, probe_chance=chance,
-                               seed=args.seed)
+                               seed=args.seed, size_matched=args.size_matched)
                 for prop in props
             }
         out["contrasts"] = {

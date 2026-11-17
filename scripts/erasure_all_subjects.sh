@@ -11,6 +11,7 @@
 #      each subject's EEG, ~4.8 GB, is deleted after its run unless KEEP_EEG=1);
 #      DRY_RUN=1 prints the commands only; PY (default python).
 # Then: python mi_verdict.py $OUT/sub-*.json --sesoi 0.02 --probe-chance coarse_category=0.0357
+#       [--size-matched]  (shuffled copies are also scored at the real edit's per-image size)
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 : "${ANNOT:?set ANNOT to the aligned annotations CSV}"

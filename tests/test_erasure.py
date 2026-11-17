@@ -80,5 +80,27 @@ class ErasureTest(unittest.TestCase):
             self.assertIn("duplicate image_id", proc.stderr)
 
 
+class SizeMatchedShuffleTest(unittest.TestCase):
+    def test_size_matched_copy_moves_each_image_as_far_as_the_real_erasure(self):
+        from eegdistill.erasure import evaluate_erasure
+
+        rng = np.random.default_rng(1)
+        z = rng.normal(size=(80, 6))
+        test_z = rng.normal(size=(20, 6))
+        z[:, 0] *= 5  # the real label reads a high-variance axis: a big edit
+        test_z[:, 0] *= 5
+        train = {"real": z[:, 0], "noise": rng.normal(size=80)}
+        test = {"real": test_z[:, 0], "noise": rng.normal(size=20)}
+        report = evaluate_erasure(z, test_z, test_z, train, test, controls=2,
+                                  size_matched={"noise": "real"})
+        real = report["interventions"]["real"]
+        shuffled = report["interventions"]["noise"]
+        matched = shuffled["size_matched"]
+        self.assertLess(shuffled["target"]["mean_l2"], 0.5 * real["target"]["mean_l2"])
+        self.assertAlmostEqual(matched["mean_l2"], real["target"]["mean_l2"])
+        self.assertLess(matched["max_l2_matching_error"], 1e-9)  # per image, not on average
+        self.assertNotIn("size_matched", real)
+
+
 if __name__ == "__main__":
     unittest.main()

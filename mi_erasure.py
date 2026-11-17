@@ -106,6 +106,7 @@ def run_subject(args, subject, run_dir, labels, eeg_info):
                               or derived.get(name, {}) == {"kind": "shuffled",
                                                            "from": args.category}), controls=args.controls,
             strength=args.strength, ridge=args.ridge, seed=args.seed,
+            size_matched={k: d["from"] for k, d in derived.items() if d["kind"] == "shuffled"},
         )
     return report
 

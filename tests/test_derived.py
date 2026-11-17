@@ -194,6 +194,9 @@ class RunnerTest(unittest.TestCase):
                              {"kind": "joint", "of": ["edge_density", "contrast"]})
             self.assertEqual(edits["lowlevel"]["rank"], 2)
             self.assertEqual(report["derived"]["lowlevel_shuf0"]["from"], "lowlevel")
+            # Each shuffled copy is also scored at its real property's edit size.
+            self.assertAlmostEqual(edits["lowlevel_shuf0"]["size_matched"]["mean_l2"],
+                                   edits["lowlevel"]["target"]["mean_l2"])
             # Shuffled category stays categorical: probed by balanced accuracy.
             self.assertIn("balanced_accuracy",
                           edits["category_shuf0"]["target"]["probes"]["category_shuf0"])

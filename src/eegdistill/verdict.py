@@ -52,7 +52,7 @@ def _remaining(rows, edits, name, probe_chance, which="target"):
 
 
 def classify(report, prop, budget, *, sesoi, floor_margin=0.01, removal_tol=0.1,
-             collateral_tol=0.25, probe_chance=None, seed=0):
+             collateral_tol=0.25, probe_chance=None, seed=0, size_matched=False):
     """Map one property x repetition budget onto the decision table.
 
     floor_margin: top-1 above chance (1 / gallery size) still treated as the floor.
@@ -61,6 +61,8 @@ def classify(report, prop, budget, *, sesoi, floor_margin=0.01, removal_tol=0.1,
     collateral_tol: largest extra fraction of a competing property's above-chance
         probe score the target edit may remove beyond the matched controls.
     probe_chance: {categorical property: 1 / n_classes}; r2 probes default to 0.
+    size_matched: decide on shuffled copies rescaled to the target edit's L2
+        (excess_vs_size_matched_shuffled_top1) instead of raw shuffled copies.
     """
     probe_chance = probe_chance or {}
     rows = _rows(report, prop, budget)
@@ -103,7 +105,17 @@ def classify(report, prop, budget, *, sesoi, floor_margin=0.01, removal_tol=0.1,
                 report["subjects"][s]["views"][budget]["interventions"][p]["excess_damage"]["top1"]
                 for p in shuffled])
             for s, e in edits.items()}, seed)
-    decide = vs_shuffled or excess
+    vs_matched = None
+    if shuffled and all("size_matched" in report["subjects"][s]["views"][budget]["interventions"][p]
+                        for s in edits for p in shuffled):
+        # Damage of the real edit beyond a shuffled edit of the same per-image size.
+        vs_matched = subject_stats({
+            s: np.mean([report["subjects"][s]["views"][budget]["interventions"][p]
+                        ["size_matched"]["top1"] for p in shuffled]) - e["target"]["top1"]
+            for s, e in edits.items()}, seed)
+    if size_matched and shuffled and vs_matched is None:
+        raise ValueError(f"{prop} @ {budget}: no size-matched shuffled copies in the report")
+    decide = (vs_matched if size_matched else vs_shuffled) or excess
 
     verdict = "inconclusive"
     if baseline <= floor or (target <= floor and control <= floor):
@@ -118,6 +130,7 @@ def classify(report, prop, budget, *, sesoi, floor_margin=0.01, removal_tol=0.1,
         verdict = "bounded_null"
     return {"verdict": verdict, "chance_top1": chance, "excess_top1": excess,
             "excess_vs_shuffled_top1": vs_shuffled,
+            "excess_vs_size_matched_shuffled_top1": vs_matched,
             "target_remaining": remaining, "collateral_extra_loss": collateral,
             "related_remaining": related, "mean_top1": {"baseline": float(baseline), "target": float(target),
                           "control": float(control)}}

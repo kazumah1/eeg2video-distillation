@@ -75,12 +75,17 @@ def _control_delta(centered, basis, size):
 
 
 def evaluate_erasure(train, test, gallery, train_labels, test_labels, *,
-                     categorical=(), controls=20, strength=1.0, ridge=1e-4, seed=0):
+                     categorical=(), controls=20, strength=1.0, ridge=1e-4, seed=0,
+                     size_matched=None):
     """Fit on training images and score on distinct test images in gallery order.
 
     Erase the orthogonal span of training cross-covariance directions. Edit EEG
     outputs before cosine normalization. Controls use random subspaces of the
     same dimension and match the pre-normalization L2 displacement per image.
+
+    size_matched: {label: reference label}. Also score each such label's edit
+    rescaled per image to the reference erasure's L2 displacement (key
+    "size_matched"), so a shuffled copy can be compared at equal edit size.
     """
     train, test, gallery = [np.asarray(x, dtype=np.float64) for x in (train, test, gallery)]
     if (any(x.ndim != 2 or not np.isfinite(x).all() for x in (train, test, gallery))
@@ -132,7 +137,11 @@ def evaluate_erasure(train, test, gallery, train_labels, test_labels, *,
             "undefined_angles": int(len(test) - len(angles)),
         }
 
+    size_matched = size_matched or {}
+    if not set(size_matched) | set(size_matched.values()) <= set(targets):
+        raise ValueError("size_matched labels must be erasure labels")
     result = {"baseline": score(train, test), "interventions": {}}
+    sizes = {}
     for name, (labels, _) in targets.items():
         cross_cov = centered_train.T @ (labels - labels.mean(axis=0)) / len(train)
         left, singular, _ = np.linalg.svd(cross_cov, full_matrices=False)
@@ -148,6 +157,7 @@ def evaluate_erasure(train, test, gallery, train_labels, test_labels, *,
         train_size = np.linalg.norm(train_delta, axis=1)
         test_size = np.linalg.norm(test_delta, axis=1)
         targeted = score_edit(train_delta, test_delta, test_size)
+        sizes[name] = (train_size, test_size)
         draws = []
         rng = np.random.default_rng(seed)
         for _ in range(controls):
@@ -157,7 +167,15 @@ def evaluate_erasure(train, test, gallery, train_labels, test_labels, *,
                 _control_delta(centered_test, random_basis, test_size),
                 test_size,
             ))
+        reference = size_matched.get(name)
+        matched = {}
+        if reference is not None and reference in sizes:
+            ref_train, ref_test = sizes[reference]
+            matched["size_matched"] = score_edit(
+                _control_delta(centered_train, basis, ref_train),
+                _control_delta(centered_test, basis, ref_test), ref_test)
         result["interventions"][name] = {
+            **matched,
             "rank": rank, "target": targeted, "controls": draws,
             "target_l2_by_test_index": test_size.tolist(),
             "excess_damage": {
