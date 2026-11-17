@@ -141,12 +141,16 @@ SHARED_SETTINGS = ("annotations", "descriptors", "category", "strength", "galler
                    "controls", "ridge", "image_counts")
 
 
-def montage_contrast(report_a, report_b, prop, budget, *, seed=0):
+def montage_contrast(report_a, report_b, prop, budget, *, seed=0, size_matched=False):
     """Paired per-subject difference in excess damage between two montages.
 
     D_a - D_b equals how much more the targeted edit shrinks the a-minus-b
-    accuracy gap than matched random edits do. Compare this directly: an effect
+    accuracy gap than matched controls do. Compare this directly: an effect
     in one montage and none in the other does not show that the effects differ.
+    size_matched: measure excess against shuffled copies rescaled to the real edit's
+        size, as classify(size_matched=True) does, instead of random subspaces.
+    relative_*: excess as a fraction of each subject's baseline top-1, for montages
+        whose baselines differ (an 18% decoder cannot lose as much as a 55% one).
     """
     for key in SHARED_SETTINGS:
         if report_a.get(key) != report_b.get(key):
@@ -157,16 +161,35 @@ def montage_contrast(report_a, report_b, prop, budget, *, seed=0):
     if len(paired) < 2:
         raise ValueError(f"need at least two paired subjects, got {len(paired)}")
 
-    def excess(rows, s):
-        return rows[s]["interventions"][prop]["excess_damage"]["top1"]
+    def excess(report, rows, s):
+        edit = rows[s]["interventions"][prop]
+        if not size_matched:
+            return edit["excess_damage"]["top1"]
+        derived = report.get("derived") or {}
+        shuffled = [p for p, d in derived.items()
+                    if d.get("kind") == "shuffled" and d["from"] == prop]
+        try:
+            matched = [rows[s]["interventions"][p]["size_matched"]["top1"] for p in shuffled]
+        except KeyError:
+            matched = []
+        if not matched:
+            raise ValueError(f"{prop} @ {budget}: subject {s} has no size-matched shuffled copies")
+        return float(np.mean(matched)) - edit["target"]["top1"]
 
+    ex_a = {s: excess(report_a, rows_a, s) for s in paired}
+    ex_b = {s: excess(report_b, rows_b, s) for s in paired}
+    rel_a = {s: ex_a[s] / rows_a[s]["baseline"]["top1"] for s in paired}
+    rel_b = {s: ex_b[s] / rows_b[s]["baseline"]["top1"] for s in paired}
     return {
         "property": prop, "budget": budget, "paired_subjects": paired,
         "unpaired_subjects": unpaired,
-        "excess_top1_a": subject_stats({s: excess(rows_a, s) for s in paired}, seed),
-        "excess_top1_b": subject_stats({s: excess(rows_b, s) for s in paired}, seed),
-        "excess_top1_a_minus_b": subject_stats(
-            {s: excess(rows_a, s) - excess(rows_b, s) for s in paired}, seed),
+        "baseline": "size_matched_shuffled" if size_matched else "random",
+        "excess_top1_a": subject_stats(ex_a, seed),
+        "excess_top1_b": subject_stats(ex_b, seed),
+        "excess_top1_a_minus_b": subject_stats({s: ex_a[s] - ex_b[s] for s in paired}, seed),
+        "relative_excess_a": subject_stats(rel_a, seed),
+        "relative_excess_b": subject_stats(rel_b, seed),
+        "relative_excess_a_minus_b": subject_stats({s: rel_a[s] - rel_b[s] for s in paired}, seed),
         "baseline_gap_top1": subject_stats(
             {s: rows_a[s]["baseline"]["top1"] - rows_b[s]["baseline"]["top1"]
              for s in paired}, seed),

@@ -3,7 +3,7 @@
   python mi_verdict.py occ8.json --sesoi 0.02 --probe-chance coarse_category=0.1
   python mi_verdict.py occ8.json --contrast edge_density_resid_category category_rank1 \
       --sesoi 0.02 --probe-chance coarse_category=0.1
-  python mi_verdict.py occ8.json --vs crown8.json --sesoi 0.02 --probe-chance coarse_category=0.1
+  python mi_verdict.py occ8/sub-*.json --vs crown8/sub-*.json --sesoi 0.02 --probe-chance coarse_category=0.1
   python mi_verdict.py results/erasure/sub-*.json --sesoi 0.02 --probe-chance coarse_category=0.1
 
 Several report files (one runner call per subject) are pooled with merge_reports.
@@ -26,7 +26,8 @@ def main():
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("report", type=Path, nargs="+",
                         help="mi_erasure.py JSON(s) for montage a; several are pooled")
-    parser.add_argument("--vs", type=Path, help="second mi_erasure.py JSON (montage b)")
+    parser.add_argument("--vs", type=Path, nargs="+",
+                        help="mi_erasure.py JSON(s) for montage b; several are pooled")
     parser.add_argument("--sesoi", type=float, required=True,
                         help="smallest top-1 excess damage worth reporting (fraction)")
     parser.add_argument("--probe-chance", action="append", default=[], metavar="NAME=P",
@@ -50,7 +51,7 @@ def main():
                  if (report.get("derived") or {}).get(p, {}).get("kind") != "shuffled"]
         budgets = sorted({b for s in report["subjects"].values() for b in s["views"]}, key=int)
         out = {"settings": vars(args) | {"report": [str(p) for p in args.report],
-                                          "vs": str(args.vs) if args.vs else None},
+                                          "vs": [str(p) for p in args.vs] if args.vs else None},
                "verdicts": {}}
         for budget in budgets:
             out["verdicts"][budget] = {
@@ -66,9 +67,10 @@ def main():
             for budget in budgets
         }
         if args.vs:
-            other = json.loads(args.vs.read_text())
+            other = merge_reports([json.loads(p.read_text()) for p in args.vs])
             out["montage_contrast"] = {
-                budget: {prop: montage_contrast(report, other, prop, budget, seed=args.seed)
+                budget: {prop: montage_contrast(report, other, prop, budget, seed=args.seed,
+                                               size_matched=args.size_matched)
                          for prop in props}
                 for budget in budgets
             }
