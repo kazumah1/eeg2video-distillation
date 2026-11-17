@@ -9,7 +9,9 @@
 #        bash scripts/erasure_all_subjects.sh [SUBJECT ...]       # default: 1..10
 # Env: DATA (default $ROOT/data/things_eeg; never point it at a copy you need to keep, since
 #      each subject's EEG, ~4.8 GB, is deleted after its run unless KEEP_EEG=1);
-#      DRY_RUN=1 prints the commands only; PY (default python).
+#      DRY_RUN=1 prints the commands only; PY (default python);
+#      MONTAGES="crown8 occipital8" also trains a no-KD student per montage and writes
+#      $OUT/<montage>/sub-XX.json (default "all": the 63-channel teacher, $OUT/sub-XX.json).
 # Then: python mi_verdict.py $OUT/sub-*.json --sesoi 0.02 --probe-chance coarse_category=0.0357
 #       [--size-matched]  (shuffled copies are also scored at the real edit's per-image size)
 set -euo pipefail
@@ -37,24 +39,47 @@ ERASURE_FLAGS=(
 
 run() { echo "+ $*"; [ "${DRY_RUN:-0}" = "1" ] || "$@"; }
 
+MONTAGES=(${MONTAGES:-all})
+dest_of() { if [ "$2" = all ]; then echo "$OUT/sub-$1.json"; else echo "$OUT/$2/sub-$1.json"; fi; }
+
 mkdir -p "$OUT"
 for s in "${SUBJECTS[@]}"; do
   sub=$(printf "%02d" "$s")
-  dest=$OUT/sub-$sub.json
-  if [ -s "$dest" ]; then echo "skip sub-$sub: $dest exists"; continue; fi
+  todo=()
+  for m in "${MONTAGES[@]}"; do
+    dest=$(dest_of "$sub" "$m")
+    if [ -s "$dest" ]; then echo "skip sub-$sub $m: $dest exists"; else todo+=("$m"); fi
+  done
+  [ ${#todo[@]} -gt 0 ] || continue
   if [ ! -e "$DATA/preprocessed_eeg/sub-$sub/test.npy" ]; then
     run "$PY" "$ROOT/scripts/download_things_eeg.py" --subjects "$s" --out "$(dirname "$DATA")"
   fi
-  if [ ! -e "$ROOT/runs/nb_s${sub}_all/checkpoint_last.pth" ]; then
+  teacher=$ROOT/runs/nb_s${sub}_all
+  if [ ! -e "$teacher/checkpoint_last.pth" ]; then
     run bash "$ROOT/scripts/train_teacher_neurobridge.sh" "nb_s${sub}_all" "$s" all
   fi
-  # Write to a temp file first so an interrupted run never leaves a JSON that resume would skip.
-  if [ "${DRY_RUN:-0}" = "1" ]; then
-    echo "+ $PY mi_erasure.py --run $s runs/nb_s${sub}_all ${ERASURE_FLAGS[*]} > $dest"
-  else
-    "$PY" "$ROOT/mi_erasure.py" --run "$s" "$ROOT/runs/nb_s${sub}_all" "${ERASURE_FLAGS[@]}" \
-      > "$dest.part" && mv "$dest.part" "$dest"
-  fi
+  for m in "${todo[@]}"; do
+    dest=$(dest_of "$sub" "$m")
+    model=$teacher
+    if [ "$m" != all ]; then
+      # No-distillation student on this montage; it reuses the teacher's frozen image
+      # projector, so every montage is scored in the same embedding space and gallery.
+      model=$ROOT/runs/nb_s${sub}_$m
+      if [ ! -e "$model/checkpoint_last.pth" ]; then
+        run "$PY" "$ROOT/train_student.py" --teacher "$teacher" --eeg_dir "$DATA/preprocessed_eeg" \
+          --feat_dir "$FEAT" --aug_dir "$FEAT/GaussianBlur-GaussianNoise-LowResolution-Mosaic" --montage "$m" --condition none --subject "$s" --save_as "nb_s${sub}_$m" \
+          --runs_dir "$ROOT/runs" --results_csv "$OUT/students.csv" --device "${DEVICE:-cpu}"
+      fi
+    fi
+    mkdir -p "$(dirname "$dest")"
+    # Write to a temp file first so an interrupted run never leaves a JSON that resume would skip.
+    if [ "${DRY_RUN:-0}" = "1" ]; then
+      echo "+ $PY mi_erasure.py --run $s $model ${ERASURE_FLAGS[*]} > $dest"
+    else
+      "$PY" "$ROOT/mi_erasure.py" --run "$s" "$model" "${ERASURE_FLAGS[@]}" \
+        > "$dest.part" && mv "$dest.part" "$dest"
+    fi
+  done
   if [ "${KEEP_EEG:-0}" != "1" ]; then run rm -rf "$DATA/preprocessed_eeg/sub-$sub"; fi
 done
-echo "done: $(ls "$OUT"/sub-*.json 2>/dev/null | wc -l | tr -d ' ') subject reports in $OUT"
+echo "done: $(ls "$OUT"/sub-*.json "$OUT"/*/sub-*.json 2>/dev/null | wc -l | tr -d ' ') reports in $OUT"
