@@ -7,15 +7,16 @@
 # Usage: ANNOT=/content/drive/MyDrive/eegdistillation/annotations.csv \
 #        OUT=/content/drive/MyDrive/eegdistillation/erasure \
 #        bash scripts/erasure_all_subjects.sh [SUBJECT ...]       # default: 1..10
-# Env: DRY_RUN=1 prints the commands only; KEEP_EEG=1 keeps each subject's EEG (~4.8 GB)
-#      after its run; PY (default python).
+# Env: DATA (default $ROOT/data/things_eeg; never point it at a copy you need to keep, since
+#      each subject's EEG, ~4.8 GB, is deleted after its run unless KEEP_EEG=1);
+#      DRY_RUN=1 prints the commands only; PY (default python).
 # Then: python mi_verdict.py $OUT/sub-*.json --sesoi 0.02 --probe-chance coarse_category=0.0357
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 : "${ANNOT:?set ANNOT to the aligned annotations CSV}"
 OUT=${OUT:-$ROOT/results/erasure}
 PY=${PY:-python}
-DATA=$ROOT/data/things_eeg
+export DATA=${DATA:-$ROOT/data/things_eeg}
 FEAT=$DATA/image_feature/RN50
 SUBJECTS=("$@"); [ ${#SUBJECTS[@]} -gt 0 ] || SUBJECTS=(1 2 3 4 5 6 7 8 9 10)
 
@@ -37,7 +38,9 @@ for s in "${SUBJECTS[@]}"; do
   sub=$(printf "%02d" "$s")
   dest=$OUT/sub-$sub.json
   if [ -s "$dest" ]; then echo "skip sub-$sub: $dest exists"; continue; fi
-  run "$PY" "$ROOT/scripts/download_things_eeg.py" --subjects "$s" --out "$ROOT/data"
+  if [ ! -e "$DATA/preprocessed_eeg/sub-$sub/test.npy" ]; then
+    run "$PY" "$ROOT/scripts/download_things_eeg.py" --subjects "$s" --out "$(dirname "$DATA")"
+  fi
   if [ ! -e "$ROOT/runs/nb_s${sub}_all/checkpoint_last.pth" ]; then
     run bash "$ROOT/scripts/train_teacher_neurobridge.sh" "nb_s${sub}_all" "$s" all
   fi
