@@ -159,6 +159,24 @@ class VerdictTest(unittest.TestCase):
         self.assertEqual(result["verdict"], "specific_effect")
         self.assertEqual(set(result["collateral_extra_loss"]), {"category"})
 
+    def test_joint_target_counts_its_members_as_related_not_collateral(self):
+        from eegdistill.verdict import classify
+
+        def joint_view():
+            v = view(target_top1=0.10, control_top1=0.28)
+            for scores in [v["baseline"], v["interventions"]["edges"]["target"],
+                           *v["interventions"]["edges"]["controls"]]:
+                scores["probes"]["lowlevel"] = {"r2": scores["probes"]["edges"]["r2"]}
+            v["interventions"]["lowlevel"] = v["interventions"].pop("edges")
+            return v
+
+        r = report([joint_view() for _ in range(10)],
+                   derived={"lowlevel": {"kind": "joint", "of": ["edges"]}})
+        result = classify(r, "lowlevel", "80", sesoi=0.02, probe_chance=CHANCE)
+        self.assertEqual(result["verdict"], "specific_effect")
+        self.assertEqual(set(result["collateral_extra_loss"]), {"category"})
+        self.assertIn("edges", result["related_remaining"])
+
     def test_categorical_probe_without_chance_level_is_rejected(self):
         from eegdistill.verdict import classify
 

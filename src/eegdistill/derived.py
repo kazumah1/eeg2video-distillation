@@ -11,10 +11,12 @@ import numpy as np
 
 
 def add_derived_labels(train_z, train_labels, test_labels, *, category,
-                       residualize=(), rank_matched=True, shuffles=0, train_groups=None,
-                       seed=0):
+                       residualize=(), rank_matched=True, joint=None, shuffles=0,
+                       train_groups=None, seed=0):
     """Return (train_labels, test_labels, derived) with derived columns added.
 
+    joint: {name: [descriptor, ...]} stacks descriptors into one multi-column label,
+        so one erasure removes the span of all their cross-covariance directions.
     shuffles: number of concept-shuffled copies of every original property.
         Train values move as whole concept blocks (train_groups gives each image's
         concept; concepts must be equal-sized), test values are permuted across
@@ -37,6 +39,11 @@ def add_derived_labels(train_z, train_labels, test_labels, *, category,
         test_labels[key] = (np.asarray(test_labels[name], dtype=float)
                             - np.array([means[c] for c in test_cat]))
         derived[key] = {"kind": "residualized", "from": name, "on": category}
+    for name, columns in (joint or {}).items():
+        train_labels[name] = np.stack([np.asarray(train_labels[c], dtype=float) for c in columns], 1)
+        test_labels[name] = np.stack([np.asarray(test_labels[c], dtype=float) for c in columns], 1)
+        derived[name] = {"kind": "joint", "of": list(columns)}
+        originals.append(name)
     if rank_matched:
         # Same raw (pre-normalization) embeddings evaluate_erasure edits.
         z = np.asarray(train_z, dtype=float)

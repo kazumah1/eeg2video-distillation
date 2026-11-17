@@ -20,13 +20,16 @@ export DATA=${DATA:-$ROOT/data/things_eeg}
 FEAT=$DATA/image_feature/RN50
 SUBJECTS=("$@"); [ ${#SUBJECTS[@]} -gt 0 ] || SUBJECTS=(1 2 3 4 5 6 7 8 9 10)
 
-# Frozen analysis settings (decided on the sub-08 pilot, before any other subject was seen).
+# Frozen analysis settings (decided on the sub-08 pilot, before any other subject was seen;
+# the joint low-level target was added after the first 10-subject run showed the three
+# descriptors are not separable).
 ERASURE_FLAGS=(
   --eeg-dir "$DATA/preprocessed_eeg" --feat-dir "$FEAT"
   --aug-dir "$FEAT/GaussianBlur-GaussianNoise-LowResolution-Mosaic" --eval-img augmean
   --annotations "$ANNOT"
   --descriptor edge_density --descriptor contrast --descriptor spatial_frequency
   --category coarse_category --residualize edge_density --rank-matched-category
+  --joint lowlevel=edge_density,contrast,spatial_frequency
   --shuffled-controls 10 --controls 20 --strength 1.0 --ridge 1e-4 --seed 0
   --repeats 1 4 all
 )

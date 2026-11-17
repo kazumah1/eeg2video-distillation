@@ -86,14 +86,14 @@ def run_subject(args, subject, run_dir, labels, eeg_info):
         ),
     }
     train_labels, test_labels, derived = labels["train"], labels["test"], {}
-    if args.residualize or args.rank_matched_category or args.shuffled_controls:
+    if args.residualize or args.rank_matched_category or args.shuffled_controls or args.joint:
         # Rank-matched category depends on this subject's embeddings, so derive per subject.
         # Train images are stored (object, image)-flattened, so index // n_img is the concept.
         n_img = np.load(args.feat_dir / "image_train.npy", mmap_mode="r").shape[1]
         train_labels, test_labels, derived = add_derived_labels(
             train_z, train_labels, test_labels, category=args.category,
             residualize=args.residualize, rank_matched=args.rank_matched_category,
-            shuffles=args.shuffled_controls,
+            joint=args.joint, shuffles=args.shuffled_controls,
             train_groups=np.arange(len(train_z)) // n_img, seed=args.seed)
     report["derived"] = derived
     for n in budgets:
@@ -173,6 +173,8 @@ def main():
                         help="also erase N concept-shuffled copies of every property")
     parser.add_argument("--rank-matched-category", action="store_true",
                         help="also erase only the top category direction (rank 1)")
+    parser.add_argument("--joint", action="append", default=[], metavar="NAME=COL,COL",
+                        help="also erase these descriptors together as one multi-column target")
     parser.add_argument("--aug-dir", type=Path)
     parser.add_argument("--eval-img", choices=("clean", "augmean", "augrand"), default="clean")
     parser.add_argument("--repeats", nargs="+", default=["all"], metavar="N_OR_ALL")
@@ -187,10 +189,17 @@ def main():
         parser.error("provide at least one --descriptor or --category column")
     if (args.aug_dir is None) != (args.eval_img == "clean"):
         parser.error("augmented gallery modes require --aug-dir")
-    if (args.residualize or args.rank_matched_category or args.shuffled_controls) \
-            and not args.category:
-        parser.error("--residualize, --rank-matched-category and --shuffled-controls "
-                     "need --category")
+    try:
+        args.joint = {name: cols.split(",") for name, cols in
+                      (item.split("=", 1) for item in args.joint)}
+    except ValueError:
+        parser.error("--joint takes NAME=COL,COL")
+    if any(len(cols) < 2 or not set(cols) <= set(args.descriptor) for cols in args.joint.values()):
+        parser.error("--joint needs two or more --descriptor columns")
+    if (args.residualize or args.rank_matched_category or args.shuffled_controls
+            or args.joint) and not args.category:
+        parser.error("--residualize, --rank-matched-category, --shuffled-controls and "
+                     "--joint need --category")
     if not set(args.residualize) <= set(args.descriptor):
         parser.error("--residualize columns must also be --descriptor columns")
     if args.batch_size < 1:

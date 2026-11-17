@@ -81,8 +81,10 @@ def classify(report, prop, budget, *, sesoi, floor_margin=0.01, removal_tol=0.1,
     # Shuffled copies are meaningless labels: not targets of collateral concern.
     others = [p for p in next(iter(rows.values()))["baseline"]["probes"]
               if p != prop and derived.get(p, {}).get("kind") != "shuffled"]
+    # A joint target's family also includes each of its member descriptors.
+    family = {root(prop), *derived.get(prop, {}).get("of", [])}
     related = {p: _remaining(rows, edits, p, probe_chance)
-               for p in others if root(p) == root(prop)}
+               for p in others if root(p) in family}
     # Extra fraction of each competing property lost to the target edit beyond controls.
     collateral = {}
     for other in (p for p in others if p not in related):

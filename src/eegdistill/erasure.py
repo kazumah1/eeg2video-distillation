@@ -31,9 +31,11 @@ def _probe_targets(train_labels, test_labels, categorical):
             test = np.asarray(test_labels[name], dtype=float)
             if not np.isfinite(train).all() or not np.isfinite(test).all():
                 raise ValueError(f"{name}: descriptors must be finite")
-            if not train.std() or not test.std():
+            # A 2-D descriptor (n, k) is one joint label: one k-column target.
+            train, test = train.reshape(len(train), -1), test.reshape(len(test), -1)
+            if not train.std(axis=0).all() or not test.std(axis=0).all():
                 raise ValueError(f"{name}: descriptors must vary in both splits")
-            targets[name] = (train[:, None], test)
+            targets[name] = (train, test)
     return targets
 
 
@@ -57,9 +59,10 @@ def _probe_scores(train, test, targets, categorical, ridge):
             accuracy = [correct[truth == label].mean() for label in np.unique(truth)]
             scores[name] = {"balanced_accuracy": float(np.mean(accuracy))}
         else:
-            residual = np.sum((truth - pred[:, 0]) ** 2)
-            total = np.sum((truth - truth.mean()) ** 2)
-            scores[name] = {"r2": float(1 - residual / total)}
+            # Mean R^2 over columns (one column for a scalar descriptor).
+            residual = np.sum((truth - pred) ** 2, axis=0)
+            total = np.sum((truth - truth.mean(axis=0)) ** 2, axis=0)
+            scores[name] = {"r2": float(np.mean(1 - residual / total))}
     return scores
 
 
@@ -86,9 +89,12 @@ def evaluate_erasure(train, test, gallery, train_labels, test_labels, *,
         raise ValueError("expected finite train/test embeddings and one gallery row per test image")
     if (not train_labels or train_labels.keys() != test_labels.keys()
             or not set(categorical).issubset(train_labels)
-            or any(np.shape(train_labels[k]) != (len(train),)
-                   or np.shape(test_labels[k]) != (len(test),) for k in train_labels)):
-        raise ValueError("expected matching label sets and one value per image")
+            or any(np.shape(train_labels[k])[:1] != (len(train),)
+                   or np.shape(test_labels[k])[:1] != (len(test),)
+                   or np.ndim(train_labels[k]) > 2 - (k in categorical)
+                   or np.shape(train_labels[k])[1:] != np.shape(test_labels[k])[1:]
+                   for k in train_labels)):
+        raise ValueError("expected matching label sets and one value (or row) per image")
     if controls < 2 or not 0 < strength <= 1 or not np.isfinite(ridge) or ridge <= 0:
         raise ValueError("need at least two controls, strength in (0, 1], and positive finite ridge")
     if np.any(np.linalg.norm(gallery, axis=1) == 0):

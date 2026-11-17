@@ -99,6 +99,52 @@ class ShuffledControlTest(unittest.TestCase):
                                rank_matched=False, shuffles=1, train_groups=np.array([0, 0, 1]))
 
 
+class JointErasureTest(unittest.TestCase):
+    def test_joint_label_stacks_descriptors_and_erases_their_shared_span(self):
+        from eegdistill.derived import add_derived_labels
+        from eegdistill.erasure import evaluate_erasure
+
+        rng = np.random.default_rng(0)
+        z = rng.normal(size=(60, 6))
+        test_z = rng.normal(size=(12, 6))
+        # Two descriptors read from dims 0 and 1; a third, unrelated, from dim 4.
+        train = {"a": z[:, 0], "b": z[:, 1], "c": z[:, 4], "cat": np.repeat(list("XY"), 30)}
+        test = {"a": test_z[:, 0], "b": test_z[:, 1], "c": test_z[:, 4],
+                "cat": np.repeat(list("XY"), 6)}
+        train, test, derived = add_derived_labels(
+            z, train, test, category="cat", rank_matched=False, joint={"ab": ["a", "b"]})
+        self.assertEqual(derived["ab"], {"kind": "joint", "of": ["a", "b"]})
+        np.testing.assert_array_equal(train["ab"], np.stack([z[:, 0], z[:, 1]], axis=1))
+        report = evaluate_erasure(z, test_z, test_z, train, test,
+                                  categorical=("cat",), controls=2)
+        joint = report["interventions"]["ab"]
+        self.assertEqual(joint["rank"], 2)
+        base = report["baseline"]["probes"]
+        # Joint score is the mean R^2 of its columns; probes see unit-normalized rows.
+        self.assertAlmostEqual(base["ab"]["r2"], (base["a"]["r2"] + base["b"]["r2"]) / 2)
+        self.assertGreater(base["ab"]["r2"], 0.85)
+        probes = joint["target"]["probes"]
+        self.assertLess(probes["ab"]["r2"], 0.05)  # both columns removed
+        self.assertLess(probes["a"]["r2"], 0.05)
+        self.assertLess(probes["b"]["r2"], 0.05)
+        self.assertGreater(probes["c"]["r2"], 0.85)  # unrelated descriptor kept
+
+    def test_joint_label_gets_concept_shuffled_copies_that_keep_rows_together(self):
+        from eegdistill.derived import add_derived_labels
+
+        groups = np.repeat([0, 1, 2, 3], 2)
+        train = {"a": np.arange(8.0), "b": np.arange(8.0) * 10, "cat": np.repeat(list("AABB"), 2)}
+        test = {"a": np.array([1.0, 2.0]), "b": np.array([10.0, 20.0]), "cat": np.array(list("AB"))}
+        new_train, new_test, derived = add_derived_labels(
+            np.zeros((8, 3)), train, test, category="cat", rank_matched=False,
+            joint={"ab": ["a", "b"]}, shuffles=2, train_groups=groups)
+        shuffled = new_train["ab_shuf0"]
+        self.assertEqual(shuffled.shape, (8, 2))
+        np.testing.assert_array_equal(shuffled[:, 1], shuffled[:, 0] * 10)  # rows intact
+        np.testing.assert_array_equal(new_test["ab_shuf0"][:, 1], new_test["ab_shuf0"][:, 0] * 10)
+        self.assertEqual(derived["ab_shuf1"], {"kind": "shuffled", "from": "ab"})
+
+
 class RunnerTest(unittest.TestCase):
     def test_runner_adds_residualized_and_rank_matched_erasures(self):
         import csv
@@ -121,16 +167,17 @@ class RunnerTest(unittest.TestCase):
             annotations = root / "annotations.csv"
             with annotations.open("w", newline="") as stream:
                 writer = csv.writer(stream)
-                writer.writerow(["split", "index", "image_id", "edge_density", "category"])
+                writer.writerow(["split", "index", "image_id", "edge_density", "contrast", "category"])
                 for split, size in [("train", 40), ("test", 6)]:
                     for i in range(size):
-                        writer.writerow([split, i, f"{split}/{i}", (i * 7) % 5, "ABC"[i % 3]])
+                        writer.writerow([split, i, f"{split}/{i}", (i * 7) % 5, (i * 3) % 4, "ABC"[i % 3]])
             proc = subprocess.run([
                 sys.executable, str(ROOT / "mi_erasure.py"), "--eeg-dir", eeg,
                 "--feat-dir", feat, "--annotations", str(annotations),
                 "--run", "1", str(checkpoint), "--descriptor", "edge_density",
                 "--category", "category", "--residualize", "edge_density",
                 "--rank-matched-category", "--shuffled-controls", "2", "--controls", "2",
+                "--descriptor", "contrast", "--joint", "lowlevel=edge_density,contrast",
             ], capture_output=True, text=True)
             self.assertEqual(proc.returncode, 0, proc.stderr)
             report = json.loads(proc.stdout)
@@ -143,6 +190,10 @@ class RunnerTest(unittest.TestCase):
             self.assertIn("edge_density_resid_category", report["summary"]["8"]["effects"])
             self.assertEqual(report["derived"]["category_shuf1"], {"kind": "shuffled",
                                                                  "from": "category"})
+            self.assertEqual(report["derived"]["lowlevel"],
+                             {"kind": "joint", "of": ["edge_density", "contrast"]})
+            self.assertEqual(edits["lowlevel"]["rank"], 2)
+            self.assertEqual(report["derived"]["lowlevel_shuf0"]["from"], "lowlevel")
             # Shuffled category stays categorical: probed by balanced accuracy.
             self.assertIn("balanced_accuracy",
                           edits["category_shuf0"]["target"]["probes"]["category_shuf0"])
