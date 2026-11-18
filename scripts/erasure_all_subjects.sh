@@ -11,8 +11,8 @@
 #      each subject's EEG, ~4.8 GB, is deleted after its run unless KEEP_EEG=1);
 #      RUNS (default $ROOT/runs) holds teacher and student checkpoints;
 #      DRY_RUN=1 prints the commands only; PY (default python);
-#      MONTAGES="crown8 occipital8" also trains a no-KD student per montage and writes
-#      $OUT/<montage>/sub-XX.json (default "all": the 63-channel teacher, $OUT/sub-XX.json).
+#      MONTAGES="crown8 occipital8 crown8@response" trains a student per entry (no KD unless
+#      @CONDITION) and writes $OUT/<montage>[_<condition>]/sub-XX.json (default "all": the 63-channel teacher, $OUT/sub-XX.json).
 # Then: python mi_verdict.py $OUT/sub-*.json --sesoi 0.02 --probe-chance coarse_category=0.0357
 #       [--size-matched]  (shuffled copies are also scored at the real edit's per-image size)
 set -euo pipefail
@@ -42,7 +42,9 @@ ERASURE_FLAGS=(
 run() { echo "+ $*"; [ "${DRY_RUN:-0}" = "1" ] || "$@"; }
 
 MONTAGES=(${MONTAGES:-all})
-dest_of() { if [ "$2" = all ]; then echo "$OUT/sub-$1.json"; else echo "$OUT/$2/sub-$1.json"; fi; }
+# A montage entry is MONTAGE or MONTAGE@CONDITION (a train_student.py preset, default none).
+name_of() { case "$1" in *@none) echo "${1%@*}";; *@*) echo "${1%@*}_${1#*@}";; *) echo "$1";; esac; }
+dest_of() { if [ "$2" = all ]; then echo "$OUT/sub-$1.json"; else echo "$OUT/$(name_of "$2")/sub-$1.json"; fi; }
 
 mkdir -p "$OUT"
 for s in "${SUBJECTS[@]}"; do
@@ -64,12 +66,14 @@ for s in "${SUBJECTS[@]}"; do
     dest=$(dest_of "$sub" "$m")
     model=$teacher
     if [ "$m" != all ]; then
-      # No-distillation student on this montage; it reuses the teacher's frozen image
-      # projector, so every montage is scored in the same embedding space and gallery.
-      model=$RUNS/nb_s${sub}_$m
+      # Student on this montage (no distillation unless @CONDITION); it reuses the teacher's
+      # frozen image projector, so every model is scored in the same embedding space and gallery.
+      montage=${m%@*}; condition=none
+      case "$m" in *@*) condition=${m#*@};; esac
+      model=$RUNS/nb_s${sub}_$(name_of "$m")
       if [ ! -e "$model/checkpoint_last.pth" ]; then
         run "$PY" "$ROOT/train_student.py" --teacher "$teacher" --eeg_dir "$DATA/preprocessed_eeg" \
-          --feat_dir "$FEAT" --aug_dir "$FEAT/GaussianBlur-GaussianNoise-LowResolution-Mosaic" --montage "$m" --condition none --subject "$s" --save_as "nb_s${sub}_$m" \
+          --feat_dir "$FEAT" --aug_dir "$FEAT/GaussianBlur-GaussianNoise-LowResolution-Mosaic" --montage "$montage" --condition "$condition" --subject "$s" --save_as "nb_s${sub}_$(name_of "$m")" \
           --runs_dir "$RUNS" --results_csv "$OUT/students.csv" --device "${DEVICE:-cpu}"
       fi
     fi

@@ -49,5 +49,13 @@ class MontageDriverTest(unittest.TestCase):
         self.assertIn("--montage occipital8", plan)
 
 
+    def test_montage_with_condition_trains_a_distilled_student(self):
+        with tempfile.TemporaryDirectory() as out:
+            plan = dry_run(out, 3, MONTAGES="crown8@response")
+        self.assertIn("--montage crown8 --condition response --subject 3 "
+                      "--save_as nb_s03_crown8_response", plan)
+        self.assertIn(f"{out}/runs/nb_s03_crown8_response ", plan)
+        self.assertIn(f"{out}/crown8_response/sub-03.json", plan)
+
 if __name__ == "__main__":
     unittest.main()
