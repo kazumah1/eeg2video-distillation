@@ -91,6 +91,33 @@ and 95% bootstrap CI over the 10 subjects.
      thing a Crown student is missing. The next test is whether response distillation from the
      teacher shifts the crown8 student's balance toward occipital8's.
 
+## Distilled Crown students: response KD does not change the balance
+
+- **Models:** one crown8 student per subject trained with response distillation from that
+  subject's 63-channel teacher (`--condition response`: embedding + KL, tau 4). It shares
+  the teacher's frozen image projector, like the no-distillation students.
+- **Effect of distillation itself (paired, 9 subjects with both):** top-1 rises 15.9% → 17.1%
+  (+1.2 pts, 7/9 subjects). Cosine agreement with the teacher rises from 0.34 to 0.42.
+- **At 80 repetitions** (relative excess vs size-matched shuffles, 10 subjects):
+
+| | Low-level | Category | Low-level − category |
+|---|---|---|---|
+| crown8, distilled | 30% [23, 37] | 16% [11, 20] | +14 pts [+6, +24], 8/10 subjects |
+| crown8, no distillation | 33% [28, 38] | 19% [15, 23] | +14 pts [+8, +21], 9/10 |
+| distilled − no distillation | −3 pts [−9, +2] | −4 pts [−8, 0] | **0 pts [−6, +5]** |
+| distilled crown8 − occipital8 | +22 pts [+15, +29] | +1 pt [−5, +5] | +21 pts [+13, +31], 10/10 |
+
+5. **Response distillation leaves the Crown student's reliance pattern unchanged.**
+   - Both shares shrink slightly and by the same amount, so the low-level lean stays at
+     +14 pts. The gap to occipital8 (+21 pts) is the same as without distillation.
+   - The Crown low-level lean replicates on a second, independently trained set of students.
+   - So the small accuracy gain from distillation does not come from borrowing the teacher's
+     semantic reliance. The lean looks like a property of what the Crown channels record.
+   - Caveat: this KD recipe moves the student only a little (+1.2 pts top-1). A recipe that
+     changes the student more (feature or relational KD) is the untested alternative.
+   - In the distilled student the low-level erasure removes 23% of category probe accuracy,
+     just under the 25% tolerance (26% without distillation).
+
 ## Caveats
 
 - **The effects are small.** At 4 repetitions the low-level mean clears 0.02, but the lower end
@@ -113,10 +140,10 @@ and 95% bootstrap CI over the 10 subjects.
 
 ## Next steps
 
-1. Reconcile this branch with `codex/controlled-erasure` before merging.
-2. Distilled Crown students (`--condition response`) through the same erasure: does distillation
-   move the Crown balance toward occipital's?
-3. Turn the two figures into talk slides.
+1. Optional: a stronger KD recipe (feature or relational) on crown8, to check whether any
+   distillation that moves the student more also moves its balance.
+2. Turn the figures into talk slides, adding a montage figure (crown8, distilled crown8,
+   occipital8 and the teacher side by side).
 
 ## Reproduce
 
@@ -131,6 +158,11 @@ ANNOT=... OUT=$PWD/results/erasure_montage MONTAGES="crown8 occipital8" \
 python mi_verdict.py results/erasure_montage/crown8/sub-*.json \
   --vs results/erasure_montage/occipital8/sub-*.json --sesoi 0.02 \
   --probe-chance coarse_category=0.0357 --size-matched > results/verdicts_crown_vs_occ_10sub.json
+ANNOT=... OUT=$PWD/results/erasure_montage MONTAGES="crown8@response" \
+  bash scripts/erasure_all_subjects.sh
+python mi_verdict.py results/erasure_montage/crown8_response/sub-*.json \
+  --vs results/erasure_montage/crown8/sub-*.json --sesoi 0.02 \
+  --probe-chance coarse_category=0.0357 --size-matched > results/verdicts_kd_vs_nokd_10sub.json
 ```
 
 The code is at commit `080bfb4` on branch `claude/superpowers-tdd-review-70a7a1`. The full run
