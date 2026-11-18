@@ -266,6 +266,27 @@ class MontageContrastTest(unittest.TestCase):
         self.assertAlmostEqual(result["relative_excess_a_minus_b"]["mean"], 0.0)
         self.assertEqual(result["baseline"], "size_matched_shuffled")
 
+    def test_size_matched_falls_back_to_random_for_properties_without_shuffles(self):
+        from eegdistill.verdict import montage_contrast
+
+        a = report([view(target_top1=0.10, control_top1=0.28) for _ in range(3)])
+        b = report([view(target_top1=0.20, control_top1=0.28) for _ in range(3)])
+        result = montage_contrast(a, b, "edges", "80", size_matched=True)
+        self.assertEqual(result["baseline"], "random")
+        self.assertAlmostEqual(result["excess_top1_a_minus_b"]["mean"], 0.10)
+
+    def test_relative_excess_skips_subjects_with_zero_baseline(self):
+        from eegdistill.verdict import montage_contrast
+
+        occ = report([view(base_top1=0.5, target_top1=0.4, control_top1=0.5) for _ in range(3)])
+        crown = report([view(base_top1=b, target_top1=0.0, control_top1=b)
+                        for b in (0.0, 0.2, 0.1)])
+        result = montage_contrast(occ, crown, "edges", "80")
+        self.assertEqual(result["excess_top1_b"]["n_subjects"], 3)  # absolute keeps everyone
+        self.assertEqual(result["relative_excess_b"]["n_subjects"], 2)
+        self.assertAlmostEqual(result["relative_excess_b"]["mean"], 1.0)
+        self.assertEqual(result["relative_excess_a_minus_b"]["n_subjects"], 2)
+
     def test_contrast_rejects_reports_with_different_analysis_settings(self):
         from eegdistill.verdict import montage_contrast
 

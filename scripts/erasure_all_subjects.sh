@@ -9,6 +9,7 @@
 #        bash scripts/erasure_all_subjects.sh [SUBJECT ...]       # default: 1..10
 # Env: DATA (default $ROOT/data/things_eeg; never point it at a copy you need to keep, since
 #      each subject's EEG, ~4.8 GB, is deleted after its run unless KEEP_EEG=1);
+#      RUNS (default $ROOT/runs) holds teacher and student checkpoints;
 #      DRY_RUN=1 prints the commands only; PY (default python);
 #      MONTAGES="crown8 occipital8" also trains a no-KD student per montage and writes
 #      $OUT/<montage>/sub-XX.json (default "all": the 63-channel teacher, $OUT/sub-XX.json).
@@ -19,6 +20,7 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 : "${ANNOT:?set ANNOT to the aligned annotations CSV}"
 OUT=${OUT:-$ROOT/results/erasure}
 PY=${PY:-python}
+RUNS=${RUNS:-$ROOT/runs}
 export DATA=${DATA:-$ROOT/data/things_eeg}
 FEAT=$DATA/image_feature/RN50
 SUBJECTS=("$@"); [ ${#SUBJECTS[@]} -gt 0 ] || SUBJECTS=(1 2 3 4 5 6 7 8 9 10)
@@ -54,7 +56,7 @@ for s in "${SUBJECTS[@]}"; do
   if [ ! -e "$DATA/preprocessed_eeg/sub-$sub/test.npy" ]; then
     run "$PY" "$ROOT/scripts/download_things_eeg.py" --subjects "$s" --out "$(dirname "$DATA")"
   fi
-  teacher=$ROOT/runs/nb_s${sub}_all
+  teacher=$RUNS/nb_s${sub}_all
   if [ ! -e "$teacher/checkpoint_last.pth" ]; then
     run bash "$ROOT/scripts/train_teacher_neurobridge.sh" "nb_s${sub}_all" "$s" all
   fi
@@ -64,11 +66,11 @@ for s in "${SUBJECTS[@]}"; do
     if [ "$m" != all ]; then
       # No-distillation student on this montage; it reuses the teacher's frozen image
       # projector, so every montage is scored in the same embedding space and gallery.
-      model=$ROOT/runs/nb_s${sub}_$m
+      model=$RUNS/nb_s${sub}_$m
       if [ ! -e "$model/checkpoint_last.pth" ]; then
         run "$PY" "$ROOT/train_student.py" --teacher "$teacher" --eeg_dir "$DATA/preprocessed_eeg" \
           --feat_dir "$FEAT" --aug_dir "$FEAT/GaussianBlur-GaussianNoise-LowResolution-Mosaic" --montage "$m" --condition none --subject "$s" --save_as "nb_s${sub}_$m" \
-          --runs_dir "$ROOT/runs" --results_csv "$OUT/students.csv" --device "${DEVICE:-cpu}"
+          --runs_dir "$RUNS" --results_csv "$OUT/students.csv" --device "${DEVICE:-cpu}"
       fi
     fi
     mkdir -p "$(dirname "$dest")"

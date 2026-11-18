@@ -161,35 +161,40 @@ def montage_contrast(report_a, report_b, prop, budget, *, seed=0, size_matched=F
     if len(paired) < 2:
         raise ValueError(f"need at least two paired subjects, got {len(paired)}")
 
+    def shuffled(report):
+        return [p for p, d in (report.get("derived") or {}).items()
+                if d.get("kind") == "shuffled" and d["from"] == prop]
+
+    # As in classify: properties without shuffled copies keep the random-subspace baseline.
+    matched = size_matched and bool(shuffled(report_a) and shuffled(report_b))
+
     def excess(report, rows, s):
         edit = rows[s]["interventions"][prop]
-        if not size_matched:
-            return edit["excess_damage"]["top1"]
-        derived = report.get("derived") or {}
-        shuffled = [p for p, d in derived.items()
-                    if d.get("kind") == "shuffled" and d["from"] == prop]
-        try:
-            matched = [rows[s]["interventions"][p]["size_matched"]["top1"] for p in shuffled]
-        except KeyError:
-            matched = []
         if not matched:
+            return edit["excess_damage"]["top1"]
+        scores = [rows[s]["interventions"][p].get("size_matched", {}).get("top1")
+                  for p in shuffled(report)]
+        if None in scores:
             raise ValueError(f"{prop} @ {budget}: subject {s} has no size-matched shuffled copies")
-        return float(np.mean(matched)) - edit["target"]["top1"]
+        return float(np.mean(scores)) - edit["target"]["top1"]
 
     ex_a = {s: excess(report_a, rows_a, s) for s in paired}
     ex_b = {s: excess(report_b, rows_b, s) for s in paired}
-    rel_a = {s: ex_a[s] / rows_a[s]["baseline"]["top1"] for s in paired}
-    rel_b = {s: ex_b[s] / rows_b[s]["baseline"]["top1"] for s in paired}
+    # A subject at zero baseline top-1 has no fraction to lose: drop it from relative stats.
+    base_a = {s: rows_a[s]["baseline"]["top1"] for s in paired}
+    base_b = {s: rows_b[s]["baseline"]["top1"] for s in paired}
+    rel_a = {s: ex_a[s] / base_a[s] for s in paired if base_a[s] > 0}
+    rel_b = {s: ex_b[s] / base_b[s] for s in paired if base_b[s] > 0}
     return {
         "property": prop, "budget": budget, "paired_subjects": paired,
         "unpaired_subjects": unpaired,
-        "baseline": "size_matched_shuffled" if size_matched else "random",
+        "baseline": "size_matched_shuffled" if matched else "random",
         "excess_top1_a": subject_stats(ex_a, seed),
         "excess_top1_b": subject_stats(ex_b, seed),
         "excess_top1_a_minus_b": subject_stats({s: ex_a[s] - ex_b[s] for s in paired}, seed),
         "relative_excess_a": subject_stats(rel_a, seed),
         "relative_excess_b": subject_stats(rel_b, seed),
-        "relative_excess_a_minus_b": subject_stats({s: rel_a[s] - rel_b[s] for s in paired}, seed),
+        "relative_excess_a_minus_b": subject_stats({s: rel_a[s] - rel_b[s] for s in rel_a.keys() & rel_b.keys()}, seed),
         "baseline_gap_top1": subject_stats(
             {s: rows_a[s]["baseline"]["top1"] - rows_b[s]["baseline"]["top1"]
              for s in paired}, seed),
