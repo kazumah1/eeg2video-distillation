@@ -57,6 +57,40 @@ and 95% bootstrap CI over the 10 subjects.
 
 ![control ladder](../results/figures/control_ladder.png)
 
+## Montage contrast: Crown vs occipital (8 channels each)
+
+- **Models:** one no-distillation student per subject and montage (`train_student.py
+  --condition none`). Each uses the 63-channel teacher's frozen image projector, so all models
+  share an embedding space and gallery.
+- **Baselines at 80 reps:** top-1 is 0.16 for crown8, 0.54 for occipital8 and 0.55 for the
+  teacher. Because these differ about 3×, damage is compared as a fraction of each subject's
+  baseline.
+- **At 80 repetitions** (extra damage beyond size-matched shuffles, as a share of baseline;
+  mean and 95% CI over 10 subjects):
+
+| | Low-level | Category | Low-level − category |
+|---|---|---|---|
+| crown8 | 33% [28, 38] | 19% [15, 23] | +14 pts [+8, +21], 9/10 subjects |
+| occipital8 | 8% [5, 11] | 15% [12, 17] | −7 pts [−11, −3], 8/10 subjects |
+| crown8 − occipital8 | +25 pts [+19, +29] | +4 pts [−1, +9] | **+21 pts [+15, +28], 10/10 subjects** |
+
+4. **The Crown montage's decoder leans on low-level image statistics; occipital's does not.**
+   - At equal channel count, erasing low-level information costs the crown8 decoder a third of
+     its accuracy. It costs the occipital8 decoder 8%, close to the 63-channel teacher (7%).
+   - Semantic reliance is about the same for both montages.
+   - So the Crown's channels do not just carry less of the same information. The information
+     they carry is a different mix.
+   - Caveats specific to this contrast:
+     - At 1 and 4 repetitions the crown8 baseline is near the floor (0.01 and 0.03), so only the
+       80-repetition contrast can be read.
+     - In crown8, the low-level erasure also removes 26% of category probe accuracy, just past
+       the 25% collateral tolerance. The two are more entangled in the Crown embedding, so part
+       of the low-level damage may be semantic.
+     - One training seed per student.
+   - **Implication for distillation:** a teacher that relies on semantic information is the
+     thing a Crown student is missing. The next test is whether response distillation from the
+     teacher shifts the crown8 student's balance toward occipital8's.
+
 ## Caveats
 
 - **The effects are small.** At 4 repetitions the low-level mean clears 0.02, but the lower end
@@ -69,8 +103,7 @@ and 95% bootstrap CI over the 10 subjects.
   projection, which can overstate generic damage. Results under both shuffled controls are shown.
 - **Untested so far:**
   - only one decoder architecture (NeuroBridge, CLIP RN50 targets);
-  - only one coarse category scheme;
-  - no electrode-montage contrast yet.
+  - only one coarse category scheme.
 
 ## Talk headline
 
@@ -81,7 +114,8 @@ and 95% bootstrap CI over the 10 subjects.
 ## Next steps
 
 1. Reconcile this branch with `codex/controlled-erasure` before merging.
-2. Optional: the crown-8 vs occipital-8 montage contrast (tooling exists: `mi_verdict.py --vs`).
+2. Distilled Crown students (`--condition response`) through the same erasure: does distillation
+   move the Crown balance toward occipital's?
 3. Turn the two figures into talk slides.
 
 ## Reproduce
@@ -92,6 +126,11 @@ ANNOT=$PWD/data/things_eeg/image_set/annotations.csv OUT=$PWD/results/erasure_sm
 python mi_verdict.py results/erasure_sm/sub-*.json --sesoi 0.02 \
   --probe-chance coarse_category=0.0357 --size-matched > results/verdicts_sm_10sub.json
 python scripts/plot_erasure_summary.py results/verdicts_sm_10sub.json
+ANNOT=... OUT=$PWD/results/erasure_montage MONTAGES="crown8 occipital8" \
+  bash scripts/erasure_all_subjects.sh
+python mi_verdict.py results/erasure_montage/crown8/sub-*.json \
+  --vs results/erasure_montage/occipital8/sub-*.json --sesoi 0.02 \
+  --probe-chance coarse_category=0.0357 --size-matched > results/verdicts_crown_vs_occ_10sub.json
 ```
 
 The code is at commit `080bfb4` on branch `claude/superpowers-tdd-review-70a7a1`. The full run
