@@ -55,7 +55,8 @@ for s in "${SUBJECTS[@]}"; do
     if [ -s "$dest" ]; then echo "skip sub-$sub $m: $dest exists"; else todo+=("$m"); fi
   done
   [ ${#todo[@]} -gt 0 ] || continue
-  if [ ! -e "$DATA/preprocessed_eeg/sub-$sub/test.npy" ]; then
+  # Both splits must be present: an interrupted download can leave test.npy alone.
+  if [ ! -e "$DATA/preprocessed_eeg/sub-$sub/test.npy" ] || [ ! -e "$DATA/preprocessed_eeg/sub-$sub/train.npy" ]; then
     run "$PY" "$ROOT/scripts/download_things_eeg.py" --subjects "$s" --out "$(dirname "$DATA")"
   fi
   teacher=$RUNS/nb_s${sub}_all

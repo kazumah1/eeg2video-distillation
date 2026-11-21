@@ -48,6 +48,16 @@ class MontageDriverTest(unittest.TestCase):
         self.assertNotIn("--montage crown8", plan)
         self.assertIn("--montage occipital8", plan)
 
+    def test_partial_eeg_download_is_redone(self):
+        with tempfile.TemporaryDirectory() as out:
+            eeg = Path(out) / "data/preprocessed_eeg/sub-03"
+            eeg.mkdir(parents=True)
+            (eeg / "test.npy").write_text("")  # interrupted download: no train.npy
+            plan = dry_run(out, 3)
+            (eeg / "train.npy").write_text("")
+            complete = dry_run(out, 3)
+        self.assertIn("download_things_eeg.py", plan)
+        self.assertNotIn("download_things_eeg.py", complete)
 
     def test_montage_with_condition_trains_a_distilled_student(self):
         with tempfile.TemporaryDirectory() as out:
